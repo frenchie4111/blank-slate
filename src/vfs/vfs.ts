@@ -1,7 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-
-const INDEX_KEY = 'vfs:index';
-const FILE_PREFIX = 'vfs:file:';
+import { fileKeyFor, getCurrentProjectIdSync, indexKeyFor } from '../project/store';
 
 type Listener = (change: { type: 'write' | 'delete'; path: string }) => void;
 
@@ -17,7 +15,7 @@ function normalizePath(raw: string): string {
 }
 
 async function loadIndex(): Promise<string[]> {
-  const raw = await AsyncStorage.getItem(INDEX_KEY);
+  const raw = await AsyncStorage.getItem(indexKeyFor(getCurrentProjectIdSync()));
   if (!raw) return [];
   try {
     const parsed = JSON.parse(raw);
@@ -29,7 +27,7 @@ async function loadIndex(): Promise<string[]> {
 }
 
 async function saveIndex(paths: string[]): Promise<void> {
-  await AsyncStorage.setItem(INDEX_KEY, JSON.stringify(paths));
+  await AsyncStorage.setItem(indexKeyFor(getCurrentProjectIdSync()), JSON.stringify(paths));
 }
 
 export async function listFiles(): Promise<string[]> {
@@ -39,7 +37,7 @@ export async function listFiles(): Promise<string[]> {
 
 export async function readFile(path: string): Promise<string | null> {
   const p = normalizePath(path);
-  return AsyncStorage.getItem(FILE_PREFIX + p);
+  return AsyncStorage.getItem(fileKeyFor(getCurrentProjectIdSync(), p));
 }
 
 export async function writeFile(path: string, content: string): Promise<void> {
@@ -49,7 +47,7 @@ export async function writeFile(path: string, content: string): Promise<void> {
     idx.push(p);
     await saveIndex(idx);
   }
-  await AsyncStorage.setItem(FILE_PREFIX + p, content);
+  await AsyncStorage.setItem(fileKeyFor(getCurrentProjectIdSync(), p), content);
   emit({ type: 'write', path: p });
 }
 
@@ -58,13 +56,8 @@ export async function deleteFile(path: string): Promise<void> {
   const idx = await loadIndex();
   const next = idx.filter((x) => x !== p);
   if (next.length !== idx.length) await saveIndex(next);
-  await AsyncStorage.removeItem(FILE_PREFIX + p);
+  await AsyncStorage.removeItem(fileKeyFor(getCurrentProjectIdSync(), p));
   emit({ type: 'delete', path: p });
-}
-
-export async function indexExists(): Promise<boolean> {
-  const raw = await AsyncStorage.getItem(INDEX_KEY);
-  return raw !== null;
 }
 
 export function subscribe(fn: Listener): () => void {

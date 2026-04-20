@@ -1,9 +1,21 @@
 import { StatusBar } from 'expo-status-bar';
 import React from 'react';
-import { ActivityIndicator, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, LogBox, StyleSheet, View } from 'react-native';
 import { MainScreen } from './src/screens/MainScreen';
 import { OnboardingScreen } from './src/screens/OnboardingScreen';
 import { clearApiKey, getApiKey } from './src/storage/keyStore';
+
+LogBox.ignoreAllLogs();
+
+type ErrorUtilsType = {
+  setGlobalHandler: (fn: (err: Error, isFatal?: boolean) => void) => void;
+};
+const errorUtils = (globalThis as unknown as { ErrorUtils?: ErrorUtilsType }).ErrorUtils;
+errorUtils?.setGlobalHandler((err) => {
+  console.warn('[blank-slate] suppressed global error:', err?.message);
+});
+
+(console as unknown as { reportErrorsAsExceptions?: boolean }).reportErrorsAsExceptions = false;
 
 type Gate = { stage: 'loading' } | { stage: 'onboarding' } | { stage: 'ready'; apiKey: string };
 

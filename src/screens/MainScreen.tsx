@@ -4,6 +4,7 @@ import {
   ActivityIndicator,
   Image,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   ScrollView,
@@ -14,23 +15,20 @@ import {
 } from 'react-native';
 import { runAgentTurn, type AgentEvent, type AgentRun } from '../claude/agent';
 import { createClient } from '../claude/client';
-import { DynamicView } from '../dynamic/DynamicView';
-import { seedIfEmpty } from '../vfs/seed';
+import { DynamicView, type RenderError } from '../dynamic/DynamicView';
+import { clearCompileCache } from '../dynamic/resolver';
+import {
+  emptySnapshot,
+  loadChat,
+  saveChat,
+  type Entry,
+  type ToolEntry,
+} from '../project/chatStore';
+import * as projectStore from '../project/store';
+import type { Project } from '../project/store';
+import { FilesPanel } from './FileViewer';
 
 const ICON_SRC = require('../../assets/icon.png');
-
-type UserEntry = { kind: 'user'; id: string; text: string };
-type AssistantTextEntry = { kind: 'assistant'; id: string; blockIndex: number; text: string };
-type ToolEntry = {
-  kind: 'tool';
-  id: string;
-  blockIndex: number;
-  name: string;
-  input: Record<string, unknown>;
-  result?: { ok: boolean; text: string };
-};
-type ErrorEntry = { kind: 'error'; id: string; text: string };
-type Entry = UserEntry | AssistantTextEntry | ToolEntry | ErrorEntry;
 
 type Props = { apiKey: string; onResetKey: () => void };
 
@@ -41,15 +39,79 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
   const [entries, setEntries] = React.useState<Entry[]>([]);
   const [input, setInput] = React.useState('');
   const [running, setRunning] = React.useState(false);
-  const [seeded, setSeeded] = React.useState(false);
+  const [ready, setReady] = React.useState(false);
   const [chatVisible, setChatVisible] = React.useState(false);
+  const [projects, setProjects] = React.useState<Project[]>([]);
+  const [currentId, setCurrentId] = React.useState<string | null>(null);
+  const [switcherOpen, setSwitcherOpen] = React.useState(false);
+  const [activeTab, setActiveTab] = React.useState<'chat' | 'files'>('chat');
+  const [renderRevision, setRenderRevision] = React.useState(0);
+  const [renderError, setRenderError] = React.useState<RenderError | null>(null);
+
   const historyRef = React.useRef<Anthropic.MessageParam[]>([]);
   const runRef = React.useRef<AgentRun | null>(null);
   const scrollRef = React.useRef<ScrollView | null>(null);
+  const activeProjectRef = React.useRef<string | null>(null);
+  const renderErrorRef = React.useRef<RenderError | null>(null);
+
+  const refreshProjects = React.useCallback(async () => {
+    const [list, snapshot] = await Promise.all([
+      projectStore.list(),
+      Promise.resolve(projectStore.getCurrentProjectIdSync()).then((id) => loadChat(id)),
+    ]);
+    setProjects(list);
+    const id = projectStore.getCurrentProjectIdSync();
+    setCurrentId(id);
+    activeProjectRef.current = id;
+    historyRef.current = snapshot.history;
+    setEntries(snapshot.entries);
+  }, []);
 
   React.useEffect(() => {
-    seedIfEmpty().finally(() => setSeeded(true));
+    let alive = true;
+    projectStore
+      .init()
+      .then(refreshProjects)
+      .then(() => alive && setReady(true))
+      .catch((e: Error) => {
+        console.warn('project init failed', e);
+        if (alive) setReady(true);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [refreshProjects]);
+
+  React.useEffect(() => {
+    return projectStore.subscribe(() => {
+      const nextId = projectStore.getCurrentProjectIdSync();
+      if (nextId === activeProjectRef.current) {
+        projectStore.list().then(setProjects);
+        return;
+      }
+      clearCompileCache();
+      activeProjectRef.current = nextId;
+      setCurrentId(nextId);
+      setEntries([]);
+      historyRef.current = [];
+      loadChat(nextId).then((snapshot) => {
+        if (activeProjectRef.current !== nextId) return;
+        historyRef.current = snapshot.history;
+        setEntries(snapshot.entries);
+      });
+      projectStore.list().then(setProjects);
+      setRenderRevision((r) => r + 1);
+    });
   }, []);
+
+  const persist = React.useCallback(
+    (history: Anthropic.MessageParam[], nextEntries: Entry[]) => {
+      const id = activeProjectRef.current;
+      if (!id) return;
+      saveChat(id, { history, entries: nextEntries }).catch(() => {});
+    },
+    [],
+  );
 
   const handleEvent = React.useCallback((ev: AgentEvent) => {
     if (ev.type === 'text_delta') {
@@ -59,7 +121,7 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
         );
         if (idx >= 0) {
           const copy = prev.slice();
-          const existing = copy[idx] as AssistantTextEntry;
+          const existing = copy[idx] as Extract<Entry, { kind: 'assistant' }>;
           copy[idx] = { ...existing, text: existing.text + ev.delta };
           return copy;
         }
@@ -101,29 +163,80 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
     }
   }, []);
 
+  const runTurn = React.useCallback(
+    async (text: string): Promise<void> => {
+      if (!text.trim()) return;
+      setRunning(true);
+      setEntries((prev) => [...prev, { kind: 'user', id: `u-${prev.length}`, text }]);
+      const projectAtStart = activeProjectRef.current;
+      try {
+        const run = runAgentTurn(clientRef.current!, historyRef.current, text, handleEvent);
+        runRef.current = run;
+        const nextHistory = await run.result;
+        historyRef.current = nextHistory;
+        if (projectAtStart === activeProjectRef.current) {
+          setEntries((latest) => {
+            persist(nextHistory, latest);
+            return latest;
+          });
+        }
+      } catch {
+        // runAgentTurn already emits 'error' via handleEvent.
+      } finally {
+        setRunning(false);
+        runRef.current = null;
+      }
+    },
+    [handleEvent, persist],
+  );
+
+  const autoFixIfBroken = React.useCallback(async () => {
+    const MAX = 2;
+    const projectAtStart = activeProjectRef.current;
+    for (let attempt = 0; attempt < MAX; attempt++) {
+      await new Promise((r) => setTimeout(r, 300));
+      if (activeProjectRef.current !== projectAtStart) return;
+      const err = renderErrorRef.current;
+      if (!err) return;
+      await runTurn(formatRenderErrorPrompt(err));
+    }
+  }, [runTurn]);
+
   const send = async () => {
     const text = input.trim();
     if (!text || running) return;
     setInput('');
-    setRunning(true);
-    setEntries((prev) => [
-      ...prev,
-      { kind: 'user', id: `u-${prev.length}`, text },
-    ]);
-    try {
-      const run = runAgentTurn(clientRef.current!, historyRef.current, text, handleEvent);
-      runRef.current = run;
-      const nextHistory = await run.result;
-      historyRef.current = nextHistory;
-    } catch (e) {
-      // runAgentTurn already emits 'error' to handleEvent; swallow here.
-    } finally {
-      setRunning(false);
-      runRef.current = null;
-    }
+    await runTurn(text);
+    await autoFixIfBroken();
   };
 
-  if (!seeded) {
+  const fixRenderErrorNow = React.useCallback(() => {
+    const err = renderErrorRef.current;
+    if (!err || running) return;
+    setChatVisible(true);
+    setActiveTab('chat');
+    (async () => {
+      await runTurn(formatRenderErrorPrompt(err));
+      await autoFixIfBroken();
+    })();
+  }, [running, runTurn, autoFixIfBroken]);
+
+  const handleRenderError = React.useCallback((err: RenderError) => {
+    renderErrorRef.current = err;
+    setTimeout(() => setRenderError(err), 0);
+  }, []);
+
+  const handleRenderClear = React.useCallback(() => {
+    renderErrorRef.current = null;
+    setTimeout(() => setRenderError(null), 0);
+  }, []);
+
+  const openSwitcher = () => {
+    if (running) return;
+    setSwitcherOpen(true);
+  };
+
+  if (!ready) {
     return (
       <View style={styles.loading}>
         <ActivityIndicator color="#fff" />
@@ -131,10 +244,17 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
     );
   }
 
+  const currentProject = projects.find((p) => p.id === currentId) ?? null;
+
   return (
     <View style={styles.root}>
       <View style={styles.appLayer}>
-        <DynamicView />
+        <DynamicView
+          revision={renderRevision}
+          onError={handleRenderError}
+          onClear={handleRenderClear}
+          onFix={fixRenderErrorNow}
+        />
       </View>
 
       {chatVisible ? null : (
@@ -158,11 +278,21 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
               <Pressable
                 onPress={() => setChatVisible(false)}
                 hitSlop={10}
-                style={styles.chatHeaderLeft}
+                style={styles.chatHeaderBadge}
                 accessibilityLabel="Back to app"
               >
                 <Image source={ICON_SRC} style={styles.chatHeaderIcon} />
-                <Text style={styles.chatHeaderTitle}>Blank Slate</Text>
+              </Pressable>
+              <Pressable
+                onPress={openSwitcher}
+                hitSlop={8}
+                style={styles.projectTitleBtn}
+                disabled={running}
+              >
+                <Text style={styles.projectTitle} numberOfLines={1}>
+                  {currentProject?.name ?? 'Blank Slate'}
+                </Text>
+                <Text style={styles.projectChevron}>▾</Text>
               </Pressable>
               <View style={styles.chatHeaderActions}>
                 <Pressable onPress={() => setChatVisible(false)} hitSlop={10}>
@@ -174,58 +304,305 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
               </View>
             </View>
 
-            <ScrollView
-              ref={scrollRef}
-              contentContainerStyle={styles.messages}
-              onContentSizeChange={() =>
-                scrollRef.current?.scrollToEnd({ animated: true })
-              }
-            >
-              {entries.length === 0 ? (
-                <Text style={styles.hint}>
-                  Tell Claude what to build — e.g. "a counter with a red increment button,
-                  and extract the button into components/Button.tsx".
-                </Text>
-              ) : (
-                entries.map((e) => <EntryView key={e.id} entry={e} />)
-              )}
-              {running ? (
-                <View style={styles.statusRow}>
-                  <ActivityIndicator size="small" color="#6b7280" />
-                  <Text style={styles.statusText}>thinking…</Text>
-                </View>
-              ) : null}
-            </ScrollView>
-
-            <View style={styles.inputRow}>
-              <TextInput
-                value={input}
-                onChangeText={setInput}
-                placeholder="ask claude to build something"
-                placeholderTextColor="#888"
-                style={styles.input}
-                editable={!running}
-                multiline
-                onSubmitEditing={send}
-                returnKeyType="send"
-                blurOnSubmit
+            <View style={styles.tabBar}>
+              <TabButton
+                label="Chat"
+                active={activeTab === 'chat'}
+                onPress={() => setActiveTab('chat')}
               />
-              <Pressable
-                style={[styles.sendBtn, (!input.trim() || running) && styles.sendBtnDisabled]}
-                onPress={send}
-                disabled={!input.trim() || running}
-              >
-                {running ? (
-                  <ActivityIndicator color="#0b0b0f" size="small" />
-                ) : (
-                  <Text style={styles.sendBtnText}>send</Text>
-                )}
-              </Pressable>
+              <TabButton
+                label="Files"
+                active={activeTab === 'files'}
+                onPress={() => setActiveTab('files')}
+              />
             </View>
+
+            {renderError ? (
+              <View style={styles.errorBanner}>
+                <View style={styles.errorBannerText}>
+                  <Text style={styles.errorBannerTitle}>
+                    App crashed: {renderError.stage} in {renderError.path}
+                  </Text>
+                  <Text style={styles.errorBannerMsg} numberOfLines={2}>
+                    {renderError.message}
+                  </Text>
+                </View>
+                <Pressable
+                  style={[styles.errorBannerBtn, running && styles.errorBannerBtnDisabled]}
+                  onPress={fixRenderErrorNow}
+                  disabled={running}
+                >
+                  <Text style={styles.errorBannerBtnText}>Fix</Text>
+                </Pressable>
+              </View>
+            ) : null}
+
+            {activeTab === 'chat' ? (
+              <>
+                <ScrollView
+                  ref={scrollRef}
+                  contentContainerStyle={styles.messages}
+                  onContentSizeChange={() =>
+                    scrollRef.current?.scrollToEnd({ animated: true })
+                  }
+                >
+                  {entries.length === 0 ? (
+                    <Text style={styles.hint}>
+                      Tell Claude what to build — e.g. "a counter with a red increment button,
+                      and extract the button into components/Button.tsx".
+                    </Text>
+                  ) : (
+                    entries.map((e) => <EntryView key={e.id} entry={e} />)
+                  )}
+                  {running ? (
+                    <View style={styles.statusRow}>
+                      <ActivityIndicator size="small" color="#6b7280" />
+                      <Text style={styles.statusText}>thinking…</Text>
+                    </View>
+                  ) : null}
+                </ScrollView>
+
+                <View style={styles.inputRow}>
+                  <TextInput
+                    value={input}
+                    onChangeText={setInput}
+                    placeholder="ask claude to build something"
+                    placeholderTextColor="#888"
+                    style={styles.input}
+                    editable={!running}
+                    multiline
+                    onSubmitEditing={send}
+                    returnKeyType="send"
+                    blurOnSubmit
+                  />
+                  <Pressable
+                    style={[styles.sendBtn, (!input.trim() || running) && styles.sendBtnDisabled]}
+                    onPress={send}
+                    disabled={!input.trim() || running}
+                  >
+                    {running ? (
+                      <ActivityIndicator color="#0b0b0f" size="small" />
+                    ) : (
+                      <Text style={styles.sendBtnText}>send</Text>
+                    )}
+                  </Pressable>
+                </View>
+              </>
+            ) : (
+              <FilesPanel projectId={currentId} />
+            )}
           </KeyboardAvoidingView>
         </View>
       ) : null}
+
+      <ProjectSwitcher
+        open={switcherOpen}
+        onClose={() => setSwitcherOpen(false)}
+        projects={projects}
+        currentId={currentId}
+      />
     </View>
+  );
+}
+
+function TabButton({
+  label,
+  active,
+  onPress,
+}: {
+  label: string;
+  active: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable onPress={onPress} style={[styles.tabBtn, active && styles.tabBtnActive]}>
+      <Text style={[styles.tabBtnText, active && styles.tabBtnTextActive]}>{label}</Text>
+    </Pressable>
+  );
+}
+
+function ProjectSwitcher({
+  open,
+  onClose,
+  projects,
+  currentId,
+}: {
+  open: boolean;
+  onClose: () => void;
+  projects: Project[];
+  currentId: string | null;
+}) {
+  const [creating, setCreating] = React.useState(false);
+  const [newName, setNewName] = React.useState('');
+  const [busy, setBusy] = React.useState(false);
+  const [renamingId, setRenamingId] = React.useState<string | null>(null);
+  const [renameValue, setRenameValue] = React.useState('');
+
+  React.useEffect(() => {
+    if (!open) {
+      setCreating(false);
+      setNewName('');
+      setRenamingId(null);
+      setRenameValue('');
+    }
+  }, [open]);
+
+  const handleSwitch = async (id: string) => {
+    if (id === currentId || busy) return;
+    setBusy(true);
+    try {
+      await projectStore.switchTo(id);
+      onClose();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleCreate = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const project = await projectStore.create(newName);
+      await projectStore.switchTo(project.id);
+      onClose();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleStartRename = (p: Project) => {
+    setRenamingId(p.id);
+    setRenameValue(p.name);
+  };
+
+  const handleSubmitRename = async () => {
+    if (!renamingId || busy) return;
+    setBusy(true);
+    try {
+      await projectStore.rename(renamingId, renameValue);
+      setRenamingId(null);
+      setRenameValue('');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    if (busy || projects.length <= 1) return;
+    setBusy(true);
+    try {
+      await projectStore.remove(id);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal
+      transparent
+      visible={open}
+      animationType="fade"
+      onRequestClose={onClose}
+    >
+      <View style={styles.sheetOverlay}>
+        <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
+        <View style={styles.sheet}>
+          <Text style={styles.sheetTitle}>Projects</Text>
+
+          <ScrollView style={styles.sheetList}>
+            {projects.map((p) => {
+              const isCurrent = p.id === currentId;
+              const isRenaming = renamingId === p.id;
+              return (
+                <View key={p.id} style={styles.projectRow}>
+                  {isRenaming ? (
+                    <TextInput
+                      value={renameValue}
+                      onChangeText={setRenameValue}
+                      autoFocus
+                      style={styles.renameInput}
+                      onSubmitEditing={handleSubmitRename}
+                      returnKeyType="done"
+                      placeholder="project name"
+                      placeholderTextColor="#6b7280"
+                    />
+                  ) : (
+                    <Pressable
+                      style={styles.projectNameBtn}
+                      onPress={() => handleSwitch(p.id)}
+                      disabled={busy}
+                    >
+                      <Text style={[styles.projectName, isCurrent && styles.projectNameCurrent]}>
+                        {p.name}
+                      </Text>
+                      {isCurrent ? <Text style={styles.currentMark}>current</Text> : null}
+                    </Pressable>
+                  )}
+                  <View style={styles.projectActions}>
+                    {isRenaming ? (
+                      <>
+                        <Pressable onPress={handleSubmitRename} hitSlop={6}>
+                          <Text style={styles.actionText}>save</Text>
+                        </Pressable>
+                        <Pressable onPress={() => setRenamingId(null)} hitSlop={6}>
+                          <Text style={styles.actionTextMuted}>cancel</Text>
+                        </Pressable>
+                      </>
+                    ) : (
+                      <>
+                        <Pressable onPress={() => handleStartRename(p)} hitSlop={6}>
+                          <Text style={styles.actionTextMuted}>rename</Text>
+                        </Pressable>
+                        {projects.length > 1 ? (
+                          <Pressable onPress={() => handleDelete(p.id)} hitSlop={6}>
+                            <Text style={styles.actionTextDanger}>delete</Text>
+                          </Pressable>
+                        ) : null}
+                      </>
+                    )}
+                  </View>
+                </View>
+              );
+            })}
+          </ScrollView>
+
+          <View style={styles.sheetFooter}>
+            {creating ? (
+              <View style={styles.newRow}>
+                <TextInput
+                  value={newName}
+                  onChangeText={setNewName}
+                  autoFocus
+                  placeholder="name (e.g. habit tracker)"
+                  placeholderTextColor="#6b7280"
+                  style={styles.newInput}
+                  onSubmitEditing={handleCreate}
+                  returnKeyType="done"
+                />
+                <Pressable
+                  style={[styles.newBtn, busy && styles.newBtnDisabled]}
+                  onPress={handleCreate}
+                  disabled={busy}
+                >
+                  <Text style={styles.newBtnText}>create</Text>
+                </Pressable>
+                <Pressable onPress={() => setCreating(false)} hitSlop={6}>
+                  <Text style={styles.actionTextMuted}>cancel</Text>
+                </Pressable>
+              </View>
+            ) : (
+              <Pressable
+                style={styles.addProjectBtn}
+                onPress={() => setCreating(true)}
+                disabled={busy}
+              >
+                <Text style={styles.addProjectText}>+ New project</Text>
+              </Pressable>
+            )}
+          </View>
+        </View>
+      </View>
+    </Modal>
   );
 }
 
@@ -287,6 +664,15 @@ function ToolCard({ entry }: { entry: ToolEntry }) {
       ) : null}
     </Pressable>
   );
+}
+
+function formatRenderErrorPrompt(err: RenderError): string {
+  const label = err.stage === 'runtime' ? 'crashed at runtime' : `failed during ${err.stage}`;
+  const trimmedStack = err.stack
+    ? err.stack.split('\n').slice(0, 8).join('\n')
+    : '';
+  const stackBlock = trimmedStack ? `\n\nStack (first frames):\n${trimmedStack}` : '';
+  return `The app ${label} in ${err.path}:\n\n${err.message}${stackBlock}\n\nPlease read ${err.path} and fix it so the app loads.`;
 }
 
 function safeJson(v: unknown): string {
@@ -374,7 +760,7 @@ const styles = StyleSheet.create({
   chatHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    gap: 12,
     paddingHorizontal: 16,
     paddingTop: Platform.OS === 'ios' ? 48 : 32,
     paddingBottom: 10,
@@ -382,11 +768,64 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: '#1f2937',
   },
-  chatHeaderLeft: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  chatHeaderIcon: { width: 22, height: 22, borderRadius: 5 },
-  chatHeaderTitle: { color: '#fff', fontSize: 15, fontWeight: '700' },
-  chatHeaderActions: { flexDirection: 'row', gap: 16 },
+  chatHeaderBadge: { flexShrink: 0 },
+  chatHeaderIcon: { width: 26, height: 26, borderRadius: 6 },
+  projectTitleBtn: {
+    flexShrink: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderRadius: 8,
+    backgroundColor: '#111827',
+  },
+  projectTitle: { color: '#fff', fontSize: 14, fontWeight: '600', maxWidth: 180 },
+  projectChevron: { color: '#9ca3af', fontSize: 12 },
+  chatHeaderActions: { flexDirection: 'row', gap: 16, marginLeft: 'auto' },
   headerAction: { color: '#9ca3af', fontSize: 12 },
+  tabBar: {
+    flexDirection: 'row',
+    backgroundColor: '#0b0b0f',
+    borderBottomWidth: 1,
+    borderBottomColor: '#1f2937',
+  },
+  tabBtn: {
+    paddingVertical: 12,
+    paddingHorizontal: 18,
+    borderBottomWidth: 2,
+    borderBottomColor: 'transparent',
+    marginBottom: -1,
+  },
+  tabBtnActive: { borderBottomColor: '#fff' },
+  tabBtnText: {
+    color: '#6b7280',
+    fontSize: 13,
+    fontWeight: '600',
+    letterSpacing: 0.3,
+  },
+  tabBtnTextActive: { color: '#fff' },
+  errorBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    backgroundColor: '#3b0d10',
+    borderBottomWidth: 1,
+    borderBottomColor: '#7f1d1d',
+  },
+  errorBannerText: { flex: 1 },
+  errorBannerTitle: { color: '#fecaca', fontSize: 12, fontWeight: '700' },
+  errorBannerMsg: { color: '#fca5a5', fontSize: 11, marginTop: 2 },
+  errorBannerBtn: {
+    backgroundColor: '#d93025',
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 6,
+  },
+  errorBannerBtnDisabled: { opacity: 0.5 },
+  errorBannerBtnText: { color: '#fff', fontSize: 12, fontWeight: '700' },
   messages: { padding: 12, gap: 8, flexGrow: 1 },
   hint: {
     color: '#6b7280',
@@ -480,4 +919,101 @@ const styles = StyleSheet.create({
   },
   sendBtnDisabled: { opacity: 0.3 },
   sendBtnText: { color: '#0b0b0f', fontWeight: '700', fontSize: 13 },
+
+  sheetOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    justifyContent: 'center',
+    paddingHorizontal: 16,
+  },
+  sheet: {
+    backgroundColor: '#111827',
+    borderRadius: 14,
+    maxHeight: '80%',
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: '#1f2937',
+  },
+  sheetTitle: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '700',
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 10,
+  },
+  sheetList: { maxHeight: 360 },
+  projectRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderTopWidth: 1,
+    borderTopColor: '#1f2937',
+    gap: 10,
+  },
+  projectNameBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  projectName: { color: '#e5e7eb', fontSize: 14 },
+  projectNameCurrent: { color: '#fff', fontWeight: '700' },
+  currentMark: {
+    color: '#10b981',
+    fontSize: 10,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  renameInput: {
+    flex: 1,
+    backgroundColor: '#0b0b0f',
+    borderWidth: 1,
+    borderColor: '#2a2a30',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    color: '#fff',
+    fontSize: 14,
+  },
+  projectActions: { flexDirection: 'row', gap: 10 },
+  actionText: { color: '#60a5fa', fontSize: 12 },
+  actionTextMuted: { color: '#9ca3af', fontSize: 12 },
+  actionTextDanger: { color: '#ef4444', fontSize: 12 },
+  sheetFooter: {
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#1f2937',
+    backgroundColor: '#0b0b0f',
+  },
+  addProjectBtn: {
+    paddingVertical: 8,
+    alignItems: 'center',
+    borderRadius: 8,
+    backgroundColor: '#1f2937',
+  },
+  addProjectText: { color: '#fff', fontSize: 13, fontWeight: '600' },
+  newRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  newInput: {
+    flex: 1,
+    backgroundColor: '#1a1a1f',
+    borderWidth: 1,
+    borderColor: '#2a2a30',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    color: '#fff',
+    fontSize: 13,
+  },
+  newBtn: {
+    backgroundColor: '#fff',
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  newBtnDisabled: { opacity: 0.4 },
+  newBtnText: { color: '#0b0b0f', fontWeight: '700', fontSize: 12 },
 });

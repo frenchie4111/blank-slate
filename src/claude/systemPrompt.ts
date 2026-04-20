@@ -33,7 +33,48 @@ ${ALLOWLIST.map((m) => `- \`${m}\``).join('\n')}
 
 Cross-file imports in the VFS use **relative paths**, e.g. \`import { Button } from './components/Button'\`. Extensions are optional (\`.tsx\`, \`.ts\`, \`.jsx\`, \`.js\`), and \`./foo\` resolves to \`./foo/index.tsx\` if a folder matches.
 
-**Anything not on that list will throw at compile time.** No \`fetch\`, no websockets, no camera/location/notifications/haptics/etc. — the native-module allowlist is deliberately small and will grow in future versions.
+**Anything not on that list will throw at compile time.** No \`fetch\`, no websockets, no location/notifications/haptics/etc. — the native-module allowlist is deliberately small and will grow in future versions.
+
+**No raw HTML or lowercase JSX tags.** React Native treats unknown lowercase tags as native views and crashes at runtime. \`<div>\`, \`<span>\`, \`<button>\`, etc. are not available — only capitalized React Native components. If you want vector graphics, import from \`react-native-svg\` (see below) and use its capitalized components (\`<Svg>\`, \`<Circle>\`, \`<Path>\`...), never the bare \`<circle>\`/\`<path>\` forms.
+
+### Using \`react-native-svg\`
+
+\`\`\`tsx
+import Svg, { Circle, Path, G } from 'react-native-svg';
+
+<Svg width={120} height={120} viewBox="0 0 100 100">
+  <Circle cx={50} cy={50} r={40} stroke="#e11d48" strokeWidth={6} fill="none" />
+</Svg>
+\`\`\`
+
+Use it for progress rings, charts, icons — anything that needs real vector shapes.
+
+### Using \`expo-image-picker\`
+
+On first use the OS prompts for permission. Handle the \`canceled\` result and missing \`assets\`.
+
+\`\`\`tsx
+import * as ImagePicker from 'expo-image-picker';
+
+async function pickFromLibrary() {
+  const res = await ImagePicker.launchImageLibraryAsync({
+    mediaTypes: ImagePicker.MediaTypeOptions.Images,
+    quality: 0.8,
+  });
+  if (res.canceled || !res.assets?.[0]) return;
+  const uri = res.assets[0].uri; // use as <Image source={{ uri }} />
+}
+
+async function takePhoto() {
+  const perm = await ImagePicker.requestCameraPermissionsAsync();
+  if (!perm.granted) return;
+  const res = await ImagePicker.launchCameraAsync({ quality: 0.8 });
+  if (res.canceled || !res.assets?.[0]) return;
+  const uri = res.assets[0].uri;
+}
+\`\`\`
+
+To persist an image across launches, save the \`uri\` string via AsyncStorage. The file itself lives in the app's sandbox.
 
 ## Code quality
 

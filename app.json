@@ -37,7 +37,14 @@
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-      "expo-secure-store"
+      "expo-secure-store",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Blank Slate needs access to your photos so apps you build can use them.",
+          "cameraPermission": "Blank Slate needs access to your camera so apps you build can take photos."
+        }
+      ]
     ],
     "runtimeVersion": {
       "policy": "appVersion"

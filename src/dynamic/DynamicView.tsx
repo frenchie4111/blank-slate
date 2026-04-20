@@ -1,23 +1,48 @@
 import React from 'react';
-import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from 'react-native';
+import {
+  ActivityIndicator,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 import { subscribe as subscribeVfs } from '../vfs/vfs';
 import { compileEntry, invalidate, type CompileError, type CompileResult } from './resolver';
+
+export type RenderError = {
+  stage: 'missing' | 'transpile' | 'resolve' | 'execute' | 'runtime';
+  path: string;
+  message: string;
+  stack?: string;
+};
 
 type Props = {
   entry?: string;
   revision?: number;
+  onError?: (err: RenderError) => void;
+  onClear?: () => void;
+  onFix?: () => void;
 };
 
 type BoundaryState = { error: Error | null };
 
 class ErrorBoundary extends React.Component<
-  { children: React.ReactNode; resetKey: string | number },
+  {
+    children: React.ReactNode;
+    resetKey: string | number;
+    onError?: (err: Error) => void;
+  },
   BoundaryState
 > {
   state: BoundaryState = { error: null };
 
   static getDerivedStateFromError(error: Error): BoundaryState {
     return { error };
+  }
+
+  componentDidCatch(error: Error) {
+    this.props.onError?.(error);
   }
 
   componentDidUpdate(prev: Readonly<{ resetKey: string | number }>) {
@@ -48,12 +73,14 @@ function ErrorCard({
   path,
   message,
   stack,
+  onFix,
 }: {
   title: string;
   stage: string;
   path: string;
   message: string;
   stack?: string;
+  onFix?: () => void;
 }) {
   return (
     <ScrollView contentContainerStyle={styles.errorContainer}>
@@ -63,15 +90,33 @@ function ErrorCard({
           {stage} · {path}
         </Text>
         <Text style={styles.errorMessage}>{message}</Text>
+        {onFix ? (
+          <Pressable style={styles.fixBtn} onPress={onFix}>
+            <Text style={styles.fixBtnText}>Ask Claude to fix this</Text>
+          </Pressable>
+        ) : null}
         {stack ? <Text style={styles.errorStack}>{stack}</Text> : null}
       </View>
     </ScrollView>
   );
 }
 
-export function DynamicView({ entry = 'App.tsx', revision = 0 }: Props) {
+export function DynamicView({
+  entry = 'App.tsx',
+  revision = 0,
+  onError,
+  onClear,
+  onFix,
+}: Props) {
   const [result, setResult] = React.useState<CompileResult | null>(null);
   const [version, setVersion] = React.useState(0);
+
+  const onErrorRef = React.useRef(onError);
+  const onClearRef = React.useRef(onClear);
+  React.useEffect(() => {
+    onErrorRef.current = onError;
+    onClearRef.current = onClear;
+  }, [onError, onClear]);
 
   React.useEffect(() => {
     const unsub = subscribeVfs((change) => {
@@ -92,6 +137,15 @@ export function DynamicView({ entry = 'App.tsx', revision = 0 }: Props) {
     };
   }, [entry, version, revision]);
 
+  React.useEffect(() => {
+    if (!result) return;
+    if (!result.ok) {
+      onErrorRef.current?.(toRenderError(result.error));
+    } else {
+      onClearRef.current?.();
+    }
+  }, [result]);
+
   if (!result) {
     return (
       <View style={styles.loading}>
@@ -101,12 +155,22 @@ export function DynamicView({ entry = 'App.tsx', revision = 0 }: Props) {
   }
 
   if (!result.ok) {
-    return <ErrorCardFromError error={result.error} />;
+    return <ErrorCardFromError error={result.error} onFix={onFix} />;
   }
 
   const { Component } = result;
   return (
-    <ErrorBoundary resetKey={`${entry}:${version}:${revision}`}>
+    <ErrorBoundary
+      resetKey={`${entry}:${version}:${revision}`}
+      onError={(e) =>
+        onErrorRef.current?.({
+          stage: 'runtime',
+          path: entry,
+          message: e.message,
+          stack: e.stack,
+        })
+      }
+    >
       <View style={styles.renderWrap}>
         <Component />
       </View>
@@ -114,7 +178,17 @@ export function DynamicView({ entry = 'App.tsx', revision = 0 }: Props) {
   );
 }
 
-function ErrorCardFromError({ error }: { error: CompileError }) {
+function toRenderError(err: CompileError): RenderError {
+  return { stage: err.stage, path: err.path, message: err.message, stack: err.stack };
+}
+
+function ErrorCardFromError({
+  error,
+  onFix,
+}: {
+  error: CompileError;
+  onFix?: () => void;
+}) {
   return (
     <ErrorCard
       title={`Build failed (${error.stage})`}
@@ -122,6 +196,7 @@ function ErrorCardFromError({ error }: { error: CompileError }) {
       path={error.path}
       message={error.message}
       stack={error.stack}
+      onFix={onFix}
     />
   );
 }
@@ -141,4 +216,14 @@ const styles = StyleSheet.create({
   errorMeta: { color: '#991b1b', fontSize: 11, marginBottom: 10, fontFamily: 'Courier' },
   errorMessage: { color: '#333', fontSize: 13, marginBottom: 8 },
   errorStack: { fontFamily: 'Courier', fontSize: 11, color: '#666' },
+  fixBtn: {
+    alignSelf: 'flex-start',
+    marginTop: 4,
+    marginBottom: 12,
+    backgroundColor: '#d93025',
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    borderRadius: 8,
+  },
+  fixBtnText: { color: '#fff', fontSize: 13, fontWeight: '700' },
 });
