@@ -15,7 +15,14 @@
       "mcp__harness-control__click_tab",
       "Bash(git -c commit.gpgsign=false commit -m ' *)",
       "mcp__harness-control__reload_tab",
-      "mcp__harness-control__list_shells"
+      "mcp__harness-control__list_shells",
+      "mcp__harness-control__type_tab",
+      "mcp__harness-control__get_tab_dom",
+      "mcp__harness-control__navigate_tab",
+      "mcp__harness-control__get_tab_url",
+      "mcp__harness-control__get_tab_console_logs",
+      "Bash(git *)",
+      "mcp__harness-control__list_browser_tabs"
     ]
   }
 }

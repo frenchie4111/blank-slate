@@ -2,6 +2,7 @@ import type Anthropic from '@anthropic-ai/sdk';
 import React from 'react';
 import {
   ActivityIndicator,
+  Image,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -11,217 +12,366 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { createClient, streamReply, type ChatMessage } from '../claude/client';
+import { runAgentTurn, type AgentEvent, type AgentRun } from '../claude/agent';
+import { createClient } from '../claude/client';
 import { DynamicView } from '../dynamic/DynamicView';
-import { extractCode } from '../dynamic/evaluator';
-import {
-  latest,
-  loadHistory,
-  popVersion,
-  saveVersion,
-  type SourceVersion,
-} from '../storage/sourceStore';
+import { seedIfEmpty } from '../vfs/seed';
+
+const ICON_SRC = require('../../assets/icon.png');
+
+type UserEntry = { kind: 'user'; id: string; text: string };
+type AssistantTextEntry = { kind: 'assistant'; id: string; blockIndex: number; text: string };
+type ToolEntry = {
+  kind: 'tool';
+  id: string;
+  blockIndex: number;
+  name: string;
+  input: Record<string, unknown>;
+  result?: { ok: boolean; text: string };
+};
+type ErrorEntry = { kind: 'error'; id: string; text: string };
+type Entry = UserEntry | AssistantTextEntry | ToolEntry | ErrorEntry;
 
 type Props = { apiKey: string; onResetKey: () => void };
-
-type Bubble = ChatMessage & { streaming?: boolean };
 
 export function MainScreen({ apiKey, onResetKey }: Props) {
   const clientRef = React.useRef<Anthropic | null>(null);
   if (!clientRef.current) clientRef.current = createClient(apiKey);
 
-  const [history, setHistory] = React.useState<SourceVersion[]>([]);
-  const [messages, setMessages] = React.useState<Bubble[]>([]);
+  const [entries, setEntries] = React.useState<Entry[]>([]);
   const [input, setInput] = React.useState('');
-  const [sending, setSending] = React.useState(false);
-  const [chatVisible, setChatVisible] = React.useState(true);
+  const [running, setRunning] = React.useState(false);
+  const [seeded, setSeeded] = React.useState(false);
+  const [chatVisible, setChatVisible] = React.useState(false);
+  const historyRef = React.useRef<Anthropic.MessageParam[]>([]);
+  const runRef = React.useRef<AgentRun | null>(null);
   const scrollRef = React.useRef<ScrollView | null>(null);
 
-  const source = latest(history);
-
   React.useEffect(() => {
-    let alive = true;
-    loadHistory().then((h) => {
-      if (alive) setHistory(h);
-    });
-    return () => {
-      alive = false;
-    };
+    seedIfEmpty().finally(() => setSeeded(true));
+  }, []);
+
+  const handleEvent = React.useCallback((ev: AgentEvent) => {
+    if (ev.type === 'text_delta') {
+      setEntries((prev) => {
+        const idx = prev.findIndex(
+          (e) => e.kind === 'assistant' && e.blockIndex === ev.blockIndex,
+        );
+        if (idx >= 0) {
+          const copy = prev.slice();
+          const existing = copy[idx] as AssistantTextEntry;
+          copy[idx] = { ...existing, text: existing.text + ev.delta };
+          return copy;
+        }
+        return [
+          ...prev,
+          {
+            kind: 'assistant',
+            id: `a-${ev.blockIndex}-${prev.length}`,
+            blockIndex: ev.blockIndex,
+            text: ev.delta,
+          },
+        ];
+      });
+    } else if (ev.type === 'tool_use') {
+      setEntries((prev) => [
+        ...prev,
+        {
+          kind: 'tool',
+          id: ev.id,
+          blockIndex: ev.blockIndex,
+          name: ev.name,
+          input: ev.input,
+        },
+      ]);
+    } else if (ev.type === 'tool_result') {
+      setEntries((prev) => {
+        const idx = prev.findIndex((e) => e.kind === 'tool' && e.id === ev.id);
+        if (idx < 0) return prev;
+        const copy = prev.slice();
+        const existing = copy[idx] as ToolEntry;
+        copy[idx] = { ...existing, result: { ok: ev.ok, text: ev.text } };
+        return copy;
+      });
+    } else if (ev.type === 'error') {
+      setEntries((prev) => [
+        ...prev,
+        { kind: 'error', id: `err-${prev.length}`, text: ev.message },
+      ]);
+    }
   }, []);
 
   const send = async () => {
     const text = input.trim();
-    if (!text || sending) return;
+    if (!text || running) return;
     setInput('');
-    setSending(true);
-
-    const nextMessages: Bubble[] = [
-      ...messages,
-      { role: 'user', content: text },
-      { role: 'assistant', content: '', streaming: true },
-    ];
-    setMessages(nextMessages);
-
-    const forClaude: ChatMessage[] = nextMessages
-      .slice(0, -1)
-      .map(({ role, content }) => ({ role, content }));
-
+    setRunning(true);
+    setEntries((prev) => [
+      ...prev,
+      { kind: 'user', id: `u-${prev.length}`, text },
+    ]);
     try {
-      const stream = streamReply(clientRef.current!, forClaude, source);
-      stream.onText((_delta, accumulated) => {
-        setMessages((prev) => {
-          const copy = prev.slice();
-          const last = copy[copy.length - 1];
-          if (last && last.role === 'assistant') {
-            copy[copy.length - 1] = { ...last, content: accumulated };
-          }
-          return copy;
-        });
-      });
-
-      const final = await stream.result;
-
-      setMessages((prev) => {
-        const copy = prev.slice();
-        const last = copy[copy.length - 1];
-        if (last && last.role === 'assistant') {
-          copy[copy.length - 1] = { role: 'assistant', content: final };
-        }
-        return copy;
-      });
-
-      const code = extractCode(final);
-      if (code) {
-        const nextHistory = await saveVersion(code);
-        setHistory(nextHistory);
-      }
+      const run = runAgentTurn(clientRef.current!, historyRef.current, text, handleEvent);
+      runRef.current = run;
+      const nextHistory = await run.result;
+      historyRef.current = nextHistory;
     } catch (e) {
-      const err = e as Error;
-      setMessages((prev) => {
-        const copy = prev.slice();
-        const last = copy[copy.length - 1];
-        if (last && last.role === 'assistant' && last.streaming) {
-          copy[copy.length - 1] = {
-            role: 'assistant',
-            content: `[error calling Claude: ${err.message}]`,
-          };
-        } else {
-          copy.push({ role: 'assistant', content: `[error: ${err.message}]` });
-        }
-        return copy;
-      });
+      // runAgentTurn already emits 'error' to handleEvent; swallow here.
     } finally {
-      setSending(false);
+      setRunning(false);
+      runRef.current = null;
     }
   };
 
-  const rollback = async () => {
-    const next = await popVersion();
-    setHistory(next);
-  };
+  if (!seeded) {
+    return (
+      <View style={styles.loading}>
+        <ActivityIndicator color="#fff" />
+      </View>
+    );
+  }
 
   return (
     <View style={styles.root}>
+      <View style={styles.appLayer}>
+        <DynamicView />
+      </View>
+
+      {chatVisible ? null : (
+        <Pressable
+          style={styles.floatingBadge}
+          onPress={() => setChatVisible(true)}
+          hitSlop={10}
+          accessibilityLabel="Open Blank Slate chat"
+        >
+          <Image source={ICON_SRC} style={styles.floatingBadgeIcon} />
+        </Pressable>
+      )}
+
       {chatVisible ? (
-        <View style={styles.header}>
-          <Text style={styles.headerTitle}>Blank Slate</Text>
-          <View style={styles.headerActions}>
-            <Pressable onPress={() => setChatVisible(false)} hitSlop={10}>
-              <Text style={styles.headerAction}>hide chat</Text>
-            </Pressable>
-            <Pressable onPress={onResetKey} hitSlop={10}>
-              <Text style={styles.headerAction}>reset key</Text>
-            </Pressable>
-          </View>
-        </View>
-      ) : null}
-
-      <KeyboardAvoidingView
-        style={styles.body}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
-      >
-        {chatVisible ? (
-          <>
-            <View style={styles.chatPane}>
-              <ScrollView
-                ref={scrollRef}
-                contentContainerStyle={styles.messages}
-                onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}
+        <View style={styles.chatOverlay}>
+          <KeyboardAvoidingView
+            style={StyleSheet.absoluteFill}
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          >
+            <View style={styles.chatHeader}>
+              <Pressable
+                onPress={() => setChatVisible(false)}
+                hitSlop={10}
+                style={styles.chatHeaderLeft}
+                accessibilityLabel="Back to app"
               >
-                {messages.length === 0 ? (
-                  <Text style={styles.hint}>
-                    Describe what you want. e.g. "a habit tracker with a red theme and a streak
-                    counter."
-                  </Text>
-                ) : (
-                  messages.map((m, i) => <MessageBubble key={i} message={m} />)
-                )}
-              </ScrollView>
-
-              <View style={styles.inputRow}>
-                <TextInput
-                  value={input}
-                  onChangeText={setInput}
-                  placeholder="ask claude to build something"
-                  placeholderTextColor="#888"
-                  style={styles.input}
-                  editable={!sending}
-                  multiline
-                  onSubmitEditing={send}
-                  returnKeyType="send"
-                  blurOnSubmit
-                />
-                <Pressable
-                  style={[styles.sendBtn, (!input.trim() || sending) && styles.sendBtnDisabled]}
-                  onPress={send}
-                  disabled={!input.trim() || sending}
-                >
-                  {sending ? (
-                    <ActivityIndicator color="#fff" size="small" />
-                  ) : (
-                    <Text style={styles.sendBtnText}>send</Text>
-                  )}
+                <Image source={ICON_SRC} style={styles.chatHeaderIcon} />
+                <Text style={styles.chatHeaderTitle}>Blank Slate</Text>
+              </Pressable>
+              <View style={styles.chatHeaderActions}>
+                <Pressable onPress={() => setChatVisible(false)} hitSlop={10}>
+                  <Text style={styles.headerAction}>back to app</Text>
+                </Pressable>
+                <Pressable onPress={onResetKey} hitSlop={10}>
+                  <Text style={styles.headerAction}>reset key</Text>
                 </Pressable>
               </View>
             </View>
-            <View style={styles.divider} />
-          </>
-        ) : null}
 
-        <View style={styles.dynamicPane}>
-          <DynamicView source={source} onRollback={history.length > 1 ? rollback : undefined} />
+            <ScrollView
+              ref={scrollRef}
+              contentContainerStyle={styles.messages}
+              onContentSizeChange={() =>
+                scrollRef.current?.scrollToEnd({ animated: true })
+              }
+            >
+              {entries.length === 0 ? (
+                <Text style={styles.hint}>
+                  Tell Claude what to build — e.g. "a counter with a red increment button,
+                  and extract the button into components/Button.tsx".
+                </Text>
+              ) : (
+                entries.map((e) => <EntryView key={e.id} entry={e} />)
+              )}
+              {running ? (
+                <View style={styles.statusRow}>
+                  <ActivityIndicator size="small" color="#6b7280" />
+                  <Text style={styles.statusText}>thinking…</Text>
+                </View>
+              ) : null}
+            </ScrollView>
+
+            <View style={styles.inputRow}>
+              <TextInput
+                value={input}
+                onChangeText={setInput}
+                placeholder="ask claude to build something"
+                placeholderTextColor="#888"
+                style={styles.input}
+                editable={!running}
+                multiline
+                onSubmitEditing={send}
+                returnKeyType="send"
+                blurOnSubmit
+              />
+              <Pressable
+                style={[styles.sendBtn, (!input.trim() || running) && styles.sendBtnDisabled]}
+                onPress={send}
+                disabled={!input.trim() || running}
+              >
+                {running ? (
+                  <ActivityIndicator color="#0b0b0f" size="small" />
+                ) : (
+                  <Text style={styles.sendBtnText}>send</Text>
+                )}
+              </Pressable>
+            </View>
+          </KeyboardAvoidingView>
         </View>
-      </KeyboardAvoidingView>
-
-      {!chatVisible ? (
-        <Pressable
-          style={styles.revealPill}
-          onPress={() => setChatVisible(true)}
-          hitSlop={8}
-          accessibilityLabel="Show chat"
-        >
-          <Text style={styles.revealPillText}>chat</Text>
-        </Pressable>
       ) : null}
     </View>
   );
 }
 
-function MessageBubble({ message }: { message: Bubble }) {
-  const isUser = message.role === 'user';
+function EntryView({ entry }: { entry: Entry }) {
+  if (entry.kind === 'user') {
+    return (
+      <View style={[styles.bubble, styles.bubbleUser]}>
+        <Text style={styles.bubbleTextUser}>{entry.text}</Text>
+      </View>
+    );
+  }
+  if (entry.kind === 'assistant') {
+    return (
+      <View style={[styles.bubble, styles.bubbleAssistant]}>
+        <Text style={styles.bubbleTextAssistant}>{entry.text || '…'}</Text>
+      </View>
+    );
+  }
+  if (entry.kind === 'error') {
+    return (
+      <View style={[styles.bubble, styles.bubbleError]}>
+        <Text style={styles.bubbleTextError}>⚠︎ {entry.text}</Text>
+      </View>
+    );
+  }
+  return <ToolCard entry={entry} />;
+}
+
+function ToolCard({ entry }: { entry: ToolEntry }) {
+  const [expanded, setExpanded] = React.useState(false);
+  const summary = formatToolSummary(entry.name, entry.input);
+  const icon = iconFor(entry.name);
   return (
-    <View style={[styles.bubble, isUser ? styles.bubbleUser : styles.bubbleAssistant]}>
-      <Text style={isUser ? styles.bubbleTextUser : styles.bubbleTextAssistant}>
-        {message.content || (message.streaming ? '…' : '')}
-      </Text>
-    </View>
+    <Pressable onPress={() => setExpanded((v) => !v)} style={styles.toolCard}>
+      <View style={styles.toolHeader}>
+        <Text style={styles.toolIcon}>{icon}</Text>
+        <Text style={styles.toolSummary} numberOfLines={expanded ? 0 : 1}>
+          {summary}
+        </Text>
+        {entry.result ? (
+          <Text style={[styles.toolStatus, entry.result.ok ? styles.toolOk : styles.toolErr]}>
+            {entry.result.ok ? '✓' : '✗'}
+          </Text>
+        ) : (
+          <ActivityIndicator size="small" color="#6b7280" />
+        )}
+      </View>
+      {expanded ? (
+        <View style={styles.toolBody}>
+          <Text style={styles.toolLabel}>input</Text>
+          <Text style={styles.toolDetail}>{safeJson(entry.input)}</Text>
+          {entry.result ? (
+            <>
+              <Text style={styles.toolLabel}>result</Text>
+              <Text style={styles.toolDetail}>{entry.result.text}</Text>
+            </>
+          ) : null}
+        </View>
+      ) : null}
+    </Pressable>
   );
+}
+
+function safeJson(v: unknown): string {
+  try {
+    return JSON.stringify(v, null, 2);
+  } catch {
+    return String(v);
+  }
+}
+
+function formatToolSummary(name: string, input: Record<string, unknown>): string {
+  switch (name) {
+    case 'read_file':
+      return `read_file(${stringOr(input.path, '?')})`;
+    case 'write_file': {
+      const content = typeof input.content === 'string' ? input.content : '';
+      return `write_file(${stringOr(input.path, '?')}, ${content.length} chars)`;
+    }
+    case 'edit_file': {
+      const oldLen = typeof input.old_string === 'string' ? input.old_string.length : 0;
+      const newLen = typeof input.new_string === 'string' ? input.new_string.length : 0;
+      return `edit_file(${stringOr(input.path, '?')}, ${oldLen} → ${newLen} chars)`;
+    }
+    case 'list_files':
+      return 'list_files()';
+    case 'delete_file':
+      return `delete_file(${stringOr(input.path, '?')})`;
+    default:
+      return `${name}(${safeJson(input)})`;
+  }
+}
+
+function stringOr(v: unknown, fallback: string): string {
+  return typeof v === 'string' ? v : fallback;
+}
+
+function iconFor(name: string): string {
+  switch (name) {
+    case 'read_file':
+      return '📖';
+    case 'write_file':
+      return '＋';
+    case 'edit_file':
+      return '✎';
+    case 'list_files':
+      return '⧉';
+    case 'delete_file':
+      return '🗑';
+    default:
+      return '•';
+  }
 }
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: '#0b0b0f' },
-  header: {
+  loading: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#0b0b0f' },
+  appLayer: { flex: 1 },
+  floatingBadge: {
+    position: 'absolute',
+    top: Platform.OS === 'ios' ? 52 : 36,
+    left: 16,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(11, 11, 15, 0.72)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOpacity: 0.35,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+  },
+  floatingBadgeIcon: { width: 28, height: 28, borderRadius: 6 },
+  chatOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: '#0b0b0f',
+  },
+  chatHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -229,12 +379,14 @@ const styles = StyleSheet.create({
     paddingTop: Platform.OS === 'ios' ? 48 : 32,
     paddingBottom: 10,
     backgroundColor: '#0b0b0f',
+    borderBottomWidth: 1,
+    borderBottomColor: '#1f2937',
   },
-  headerTitle: { color: '#fff', fontSize: 15, fontWeight: '700' },
-  headerActions: { flexDirection: 'row', gap: 16 },
+  chatHeaderLeft: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  chatHeaderIcon: { width: 22, height: 22, borderRadius: 5 },
+  chatHeaderTitle: { color: '#fff', fontSize: 15, fontWeight: '700' },
+  chatHeaderActions: { flexDirection: 'row', gap: 16 },
   headerAction: { color: '#9ca3af', fontSize: 12 },
-  body: { flex: 1 },
-  chatPane: { flex: 1, backgroundColor: '#0b0b0f' },
   messages: { padding: 12, gap: 8, flexGrow: 1 },
   hint: {
     color: '#6b7280',
@@ -246,7 +398,7 @@ const styles = StyleSheet.create({
     lineHeight: 20,
   },
   bubble: {
-    maxWidth: '85%',
+    maxWidth: '88%',
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 12,
@@ -261,8 +413,43 @@ const styles = StyleSheet.create({
     alignSelf: 'flex-start',
     borderBottomLeftRadius: 4,
   },
+  bubbleError: {
+    backgroundColor: '#7f1d1d',
+    alignSelf: 'flex-start',
+    borderBottomLeftRadius: 4,
+  },
   bubbleTextUser: { color: '#fff', fontSize: 14, lineHeight: 20 },
   bubbleTextAssistant: { color: '#e5e7eb', fontSize: 14, lineHeight: 20 },
+  bubbleTextError: { color: '#fecaca', fontSize: 13, lineHeight: 18 },
+  toolCard: {
+    alignSelf: 'stretch',
+    backgroundColor: '#111827',
+    borderColor: '#1f2937',
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+  },
+  toolHeader: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  toolIcon: { fontSize: 14, color: '#9ca3af', width: 16, textAlign: 'center' },
+  toolSummary: {
+    flex: 1,
+    color: '#d1d5db',
+    fontSize: 12,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+  },
+  toolStatus: { fontSize: 13, fontWeight: '700' },
+  toolOk: { color: '#10b981' },
+  toolErr: { color: '#ef4444' },
+  toolBody: { marginTop: 8, gap: 4 },
+  toolLabel: { color: '#6b7280', fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5 },
+  toolDetail: {
+    color: '#9ca3af',
+    fontSize: 11,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+  },
+  statusRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 4 },
+  statusText: { color: '#6b7280', fontSize: 12 },
   inputRow: {
     flexDirection: 'row',
     gap: 8,
@@ -293,21 +480,4 @@ const styles = StyleSheet.create({
   },
   sendBtnDisabled: { opacity: 0.3 },
   sendBtnText: { color: '#0b0b0f', fontWeight: '700', fontSize: 13 },
-  divider: { height: 1, backgroundColor: '#1f2937' },
-  dynamicPane: { flex: 1, backgroundColor: '#fff' },
-  revealPill: {
-    position: 'absolute',
-    top: Platform.OS === 'ios' ? 48 : 32,
-    right: 16,
-    backgroundColor: 'rgba(11, 11, 15, 0.85)',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 999,
-    shadowColor: '#000',
-    shadowOpacity: 0.25,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 2 },
-    elevation: 4,
-  },
-  revealPillText: { color: '#fff', fontSize: 11, fontWeight: '600' },
 });
