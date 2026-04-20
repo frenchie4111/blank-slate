@@ -2,7 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { fetch as expoFetch } from 'expo/fetch';
 import { SYSTEM_PROMPT } from './systemPrompt';
 
-const MODEL = 'claude-opus-4-7';
+const MODEL = 'claude-haiku-4-5-20251001';
 const MAX_TOKENS = 8192;
 
 export type ChatMessage = {
