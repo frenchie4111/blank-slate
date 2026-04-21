@@ -31,9 +31,28 @@ Only the following packages can be imported from:
 
 ${ALLOWLIST.map((m) => `- \`${m}\``).join('\n')}
 
+### What each module is for
+
+- \`react\` / \`react-native\` — core UI primitives, hooks, \`StyleSheet\`, \`Animated\`, \`Pressable\`, \`FlatList\`, etc.
+- \`@react-native-async-storage/async-storage\` — simple KV persistence. Fine for small data; use \`expo-sqlite\` for relational/large data.
+- \`@react-native-community/datetimepicker\` — native date/time pickers. iOS shows a spinner/wheel inline; Android shows a modal dialog. Presentation differs — design with both in mind.
+- \`@expo/vector-icons\` — thousands of icons. Import a set by name: \`import { Ionicons, MaterialIcons, FontAwesome5, Feather, MaterialCommunityIcons } from '@expo/vector-icons'\`. Use \`<Ionicons name="heart" size={24} color="red" />\`. Fonts auto-load.
+- \`expo-haptics\` — tactile feedback. \`Haptics.selectionAsync()\` on taps, \`Haptics.impactAsync(ImpactFeedbackStyle.Medium)\` for stronger hits, \`Haptics.notificationAsync(NotificationFeedbackType.Success)\` on important outcomes.
+- \`expo-linear-gradient\` — gradient views: \`<LinearGradient colors={['#ff0080', '#7928ca']} style={...} />\`.
+- \`react-native-safe-area-context\` — notch/home-indicator-aware layouts. Wrap app root with \`<SafeAreaProvider>\` then use \`useSafeAreaInsets()\` or \`<SafeAreaView>\`. Essential for anything full-screen.
+- \`expo-clipboard\` — copy / paste: \`await Clipboard.setStringAsync(text)\`, \`await Clipboard.getStringAsync()\`.
+- \`expo-sqlite\` — real persistent SQL. \`const db = await SQLite.openDatabaseAsync('app.db'); await db.execAsync('CREATE TABLE ...')\`. Use for structured/relational data.
+- \`expo-image-picker\` — pick photos/videos from the library: \`const r = await ImagePicker.launchImageLibraryAsync({ mediaTypes: 'images', quality: 0.8 })\`. Request permission first with \`requestMediaLibraryPermissionsAsync()\`.
+- \`expo-audio\` — audio playback and recording. For playback: \`const player = useAudioPlayer(source); player.play()\`. For recording: \`useAudioRecorder\`. Replaces the old \`expo-av\` Audio API.
+- \`expo-video\` — video playback with \`<VideoView player={useVideoPlayer(source)} style={...} />\`. Replaces the old \`expo-av\` Video API.
+- \`expo-notifications\` — local notifications. \`await Notifications.requestPermissionsAsync()\`, then \`Notifications.scheduleNotificationAsync({ content: {...}, trigger: {...} })\`. (No push server — local only.)
+- \`expo-location\` — geolocation: \`await Location.requestForegroundPermissionsAsync()\`, then \`await Location.getCurrentPositionAsync()\` or \`watchPositionAsync\`.
+- \`expo-blur\` — iOS-style frosted blur: \`<BlurView intensity={50} tint="light" style={...}>\`. Great for overlays and translucent headers.
+- \`react-native-svg\` — real vector shapes: \`<Svg>\`, \`<Circle>\`, \`<Path>\`, \`<G>\`. See the dedicated section below.
+
 Cross-file imports in the VFS use **relative paths**, e.g. \`import { Button } from './components/Button'\`. Extensions are optional (\`.tsx\`, \`.ts\`, \`.jsx\`, \`.js\`), and \`./foo\` resolves to \`./foo/index.tsx\` if a folder matches.
 
-**Anything not on that list will throw at compile time.** No \`fetch\`, no websockets, no location/notifications/haptics/etc. — the native-module allowlist is deliberately small and will grow in future versions.
+**Anything not on that list will throw at compile time.** No \`fetch\`, no websockets, no third-party packages — the native-module allowlist is deliberately curated and will grow in future versions.
 
 **No raw HTML or lowercase JSX tags.** React Native treats unknown lowercase tags as native views and crashes at runtime. \`<div>\`, \`<span>\`, \`<button>\`, etc. are not available — only capitalized React Native components. If you want vector graphics, import from \`react-native-svg\` (see below) and use its capitalized components (\`<Svg>\`, \`<Circle>\`, \`<Path>\`...), never the bare \`<circle>\`/\`<path>\` forms.
 

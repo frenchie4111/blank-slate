@@ -1,11 +1,17 @@
 import { StatusBar } from 'expo-status-bar';
 import React from 'react';
 import { ActivityIndicator, LogBox, StyleSheet, View } from 'react-native';
+import { SafeAreaProvider, initialWindowMetrics } from 'react-native-safe-area-context';
 import { MainScreen } from './src/screens/MainScreen';
 import { OnboardingScreen } from './src/screens/OnboardingScreen';
 import { clearApiKey, getApiKey } from './src/storage/keyStore';
 
 LogBox.ignoreAllLogs();
+// ignoreAllLogs() doesn't suppress the fullscreen "Render Error" overlay
+// because addException() bypasses the disabled flag. A catch-all ignore
+// pattern IS consulted, so this hides the overlay and lets our
+// ErrorBoundary's card be the visible crash UI.
+LogBox.ignoreLogs([/./]);
 
 type ErrorUtilsType = {
   setGlobalHandler: (fn: (err: Error, isFatal?: boolean) => void) => void;
@@ -46,18 +52,25 @@ export default function App() {
   };
 
   return (
-    <View style={styles.root}>
-      {gate.stage === 'loading' ? (
-        <View style={styles.loading}>
-          <ActivityIndicator color="#fff" />
-        </View>
-      ) : gate.stage === 'onboarding' ? (
-        <OnboardingScreen onDone={handleOnboardingDone} />
-      ) : (
-        <MainScreen apiKey={gate.apiKey} onResetKey={handleResetKey} />
-      )}
-      <StatusBar style="light" />
-    </View>
+    // Outer SafeAreaProvider with initialMetrics means any nested
+    // SafeAreaProvider inside Claude-generated code reads insets from
+    // context synchronously on mount and never gets stuck waiting for a
+    // native inset event — which was the cause of blank screens after
+    // recovering from an error state.
+    <SafeAreaProvider initialMetrics={initialWindowMetrics}>
+      <View style={styles.root}>
+        {gate.stage === 'loading' ? (
+          <View style={styles.loading}>
+            <ActivityIndicator color="#fff" />
+          </View>
+        ) : gate.stage === 'onboarding' ? (
+          <OnboardingScreen onDone={handleOnboardingDone} />
+        ) : (
+          <MainScreen apiKey={gate.apiKey} onResetKey={handleResetKey} />
+        )}
+        <StatusBar style="light" />
+      </View>
+    </SafeAreaProvider>
   );
 }
 

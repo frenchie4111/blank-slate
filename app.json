@@ -20,7 +20,11 @@
       "bundleIdentifier": "org.mikelyons.blank-slate",
       "appleTeamId": "M7Y6TPCQ63",
       "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSPhotoLibraryUsageDescription": "Blank Slate lets you pick photos when an app you build asks for one.",
+        "NSPhotoLibraryAddUsageDescription": "Blank Slate can save photos when an app you build generates one.",
+        "NSMicrophoneUsageDescription": "Blank Slate uses the microphone if an app you build records audio.",
+        "NSLocationWhenInUseUsageDescription": "Blank Slate uses your location if an app you build needs it (e.g. weather, check-ins)."
       }
     },
     "android": {
@@ -44,7 +48,13 @@
           "photosPermission": "Blank Slate needs access to your photos so apps you build can use them.",
           "cameraPermission": "Blank Slate needs access to your camera so apps you build can take photos."
         }
-      ]
+      ],
+      "@react-native-community/datetimepicker",
+      "expo-sqlite",
+      "expo-audio",
+      "expo-video",
+      "expo-notifications",
+      "expo-location"
     ],
     "runtimeVersion": {
       "policy": "appVersion"

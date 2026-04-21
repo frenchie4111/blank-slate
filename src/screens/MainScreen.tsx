@@ -13,6 +13,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { runAgentTurn, type AgentEvent, type AgentRun } from '../claude/agent';
 import { createClient } from '../claude/client';
 import { DynamicView, type RenderError } from '../dynamic/DynamicView';
@@ -33,6 +34,7 @@ const ICON_SRC = require('../../assets/icon.png');
 type Props = { apiKey: string; onResetKey: () => void };
 
 export function MainScreen({ apiKey, onResetKey }: Props) {
+  const insets = useSafeAreaInsets();
   const clientRef = React.useRef<Anthropic | null>(null);
   if (!clientRef.current) clientRef.current = createClient(apiKey);
 
@@ -190,24 +192,11 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
     [handleEvent, persist],
   );
 
-  const autoFixIfBroken = React.useCallback(async () => {
-    const MAX = 2;
-    const projectAtStart = activeProjectRef.current;
-    for (let attempt = 0; attempt < MAX; attempt++) {
-      await new Promise((r) => setTimeout(r, 300));
-      if (activeProjectRef.current !== projectAtStart) return;
-      const err = renderErrorRef.current;
-      if (!err) return;
-      await runTurn(formatRenderErrorPrompt(err));
-    }
-  }, [runTurn]);
-
   const send = async () => {
     const text = input.trim();
     if (!text || running) return;
     setInput('');
     await runTurn(text);
-    await autoFixIfBroken();
   };
 
   const fixRenderErrorNow = React.useCallback(() => {
@@ -215,11 +204,8 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
     if (!err || running) return;
     setChatVisible(true);
     setActiveTab('chat');
-    (async () => {
-      await runTurn(formatRenderErrorPrompt(err));
-      await autoFixIfBroken();
-    })();
-  }, [running, runTurn, autoFixIfBroken]);
+    runTurn(formatRenderErrorPrompt(err));
+  }, [running, runTurn]);
 
   const handleRenderError = React.useCallback((err: RenderError) => {
     renderErrorRef.current = err;
@@ -362,7 +348,7 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
                   ) : null}
                 </ScrollView>
 
-                <View style={styles.inputRow}>
+                <View style={[styles.inputRow, { paddingBottom: 10 + insets.bottom }]}>
                   <TextInput
                     value={input}
                     onChangeText={setInput}
@@ -731,9 +717,12 @@ const styles = StyleSheet.create({
   loading: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#0b0b0f' },
   appLayer: { flex: 1 },
   floatingBadge: {
+    // Positioned so the 26px icon centered inside this 44px badge lines
+    // up with the 26px chat-header icon at paddingHorizontal:16,
+    // paddingTop:(ios?48:32) — i.e. top-left offset by (44-26)/2 = 9 px.
     position: 'absolute',
-    top: Platform.OS === 'ios' ? 52 : 36,
-    left: 16,
+    top: Platform.OS === 'ios' ? 39 : 23,
+    left: 7,
     width: 44,
     height: 44,
     borderRadius: 22,
@@ -748,7 +737,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.08)',
   },
-  floatingBadgeIcon: { width: 28, height: 28, borderRadius: 6 },
+  floatingBadgeIcon: { width: 26, height: 26, borderRadius: 6 },
   chatOverlay: {
     position: 'absolute',
     top: 0,

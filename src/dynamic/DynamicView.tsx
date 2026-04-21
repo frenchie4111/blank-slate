@@ -25,29 +25,39 @@ type Props = {
   onFix?: () => void;
 };
 
-type BoundaryState = { error: Error | null };
+type BoundaryProps = {
+  children: React.ReactNode;
+  resetKey: string | number;
+  onError?: (err: Error) => void;
+  onClear?: () => void;
+  onFix?: () => void;
+};
+type BoundaryState = { error: Error | null; lastResetKey: string | number };
 
-class ErrorBoundary extends React.Component<
-  {
-    children: React.ReactNode;
-    resetKey: string | number;
-    onError?: (err: Error) => void;
-  },
-  BoundaryState
-> {
-  state: BoundaryState = { error: null };
+class ErrorBoundary extends React.Component<BoundaryProps, BoundaryState> {
+  state: BoundaryState = { error: null, lastResetKey: this.props.resetKey };
 
-  static getDerivedStateFromError(error: Error): BoundaryState {
+  static getDerivedStateFromError(error: Error): Partial<BoundaryState> {
     return { error };
+  }
+
+  static getDerivedStateFromProps(
+    nextProps: BoundaryProps,
+    prevState: BoundaryState,
+  ): Partial<BoundaryState> | null {
+    if (prevState.lastResetKey !== nextProps.resetKey) {
+      return { error: null, lastResetKey: nextProps.resetKey };
+    }
+    return null;
   }
 
   componentDidCatch(error: Error) {
     this.props.onError?.(error);
   }
 
-  componentDidUpdate(prev: Readonly<{ resetKey: string | number }>) {
-    if (prev.resetKey !== this.props.resetKey && this.state.error) {
-      this.setState({ error: null });
+  componentDidUpdate(_prevProps: BoundaryProps, prevState: BoundaryState) {
+    if (prevState.error && !this.state.error) {
+      this.props.onClear?.();
     }
   }
 
@@ -60,6 +70,7 @@ class ErrorBoundary extends React.Component<
           path="App.tsx"
           message={this.state.error.message}
           stack={this.state.error.stack}
+          onFix={this.props.onFix}
         />
       );
     }
@@ -121,6 +132,10 @@ export function DynamicView({
   React.useEffect(() => {
     const unsub = subscribeVfs((change) => {
       invalidate(change.path);
+      // Clear result in the same tick so the stale Component doesn't
+      // re-render (and potentially re-throw) against the new resetKey
+      // before the fresh compile lands.
+      setResult(null);
       setVersion((v) => v + 1);
     });
     return unsub;
@@ -137,28 +152,25 @@ export function DynamicView({
     };
   }, [entry, version, revision]);
 
+  // Only fire onClear from the useEffect when transitioning from
+  // compile-error → compile-success. Firing onClear on every successful
+  // compile races with boundary.onError (since render can still throw
+  // after compile succeeds) and would stomp the banner. Runtime-error
+  // recovery is signalled by the boundary's componentDidUpdate instead.
+  const prevCompileErroredRef = React.useRef(false);
   React.useEffect(() => {
     if (!result) return;
     if (!result.ok) {
       onErrorRef.current?.(toRenderError(result.error));
+      prevCompileErroredRef.current = true;
     } else {
-      onClearRef.current?.();
+      if (prevCompileErroredRef.current) {
+        onClearRef.current?.();
+      }
+      prevCompileErroredRef.current = false;
     }
   }, [result]);
 
-  if (!result) {
-    return (
-      <View style={styles.loading}>
-        <ActivityIndicator color="#666" />
-      </View>
-    );
-  }
-
-  if (!result.ok) {
-    return <ErrorCardFromError error={result.error} onFix={onFix} />;
-  }
-
-  const { Component } = result;
   return (
     <ErrorBoundary
       resetKey={`${entry}:${version}:${revision}`}
@@ -170,10 +182,20 @@ export function DynamicView({
           stack: e.stack,
         })
       }
+      onClear={() => onClearRef.current?.()}
+      onFix={onFix}
     >
-      <View style={styles.renderWrap}>
-        <Component />
-      </View>
+      {!result ? (
+        <View style={styles.loading}>
+          <ActivityIndicator color="#666" />
+        </View>
+      ) : !result.ok ? (
+        <ErrorCardFromError error={result.error} onFix={onFix} />
+      ) : (
+        <View style={styles.renderWrap}>
+          <result.Component />
+        </View>
+      )}
     </ErrorBoundary>
   );
 }
