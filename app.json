@@ -54,16 +54,20 @@
       "expo-audio",
       "expo-video",
       "expo-notifications",
-      "expo-location"
+      "expo-location",
+      "expo-updates"
     ],
     "runtimeVersion": {
-      "policy": "appVersion"
+      "policy": "fingerprint"
     },
     "extra": {
       "eas": {
         "projectId": "9190e865-c3d9-487c-b645-79133647956d"
       }
     },
-    "owner": "mikepersonal"
+    "owner": "mikepersonal",
+    "updates": {
+      "url": "https://u.expo.dev/9190e865-c3d9-487c-b645-79133647956d"
+    }
   }
 }

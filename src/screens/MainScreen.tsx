@@ -1,4 +1,5 @@
 import type Anthropic from '@anthropic-ai/sdk';
+import { Ionicons } from '@expo/vector-icons';
 import React from 'react';
 import {
   ActivityIndicator,
@@ -28,6 +29,7 @@ import {
 import * as projectStore from '../project/store';
 import type { Project } from '../project/store';
 import { FilesPanel } from './FileViewer';
+import { SettingsScreen } from './SettingsScreen';
 
 const ICON_SRC = require('../../assets/icon.png');
 
@@ -43,6 +45,7 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
   const [running, setRunning] = React.useState(false);
   const [ready, setReady] = React.useState(false);
   const [chatVisible, setChatVisible] = React.useState(false);
+  const [settingsVisible, setSettingsVisible] = React.useState(false);
   const [projects, setProjects] = React.useState<Project[]>([]);
   const [currentId, setCurrentId] = React.useState<string | null>(null);
   const [switcherOpen, setSwitcherOpen] = React.useState(false);
@@ -284,8 +287,12 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
                 <Pressable onPress={() => setChatVisible(false)} hitSlop={10}>
                   <Text style={styles.headerAction}>back to app</Text>
                 </Pressable>
-                <Pressable onPress={onResetKey} hitSlop={10}>
-                  <Text style={styles.headerAction}>reset key</Text>
+                <Pressable
+                  onPress={() => setSettingsVisible(true)}
+                  hitSlop={10}
+                  accessibilityLabel="Open settings"
+                >
+                  <Ionicons name="settings-outline" size={20} color="#9ca3af" />
                 </Pressable>
               </View>
             </View>
@@ -387,6 +394,18 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
         projects={projects}
         currentId={currentId}
       />
+
+      {settingsVisible ? (
+        <View style={styles.settingsOverlay}>
+          <SettingsScreen
+            onBack={() => setSettingsVisible(false)}
+            onResetKey={async () => {
+              setSettingsVisible(false);
+              await onResetKey();
+            }}
+          />
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -739,6 +758,14 @@ const styles = StyleSheet.create({
   },
   floatingBadgeIcon: { width: 26, height: 26, borderRadius: 6 },
   chatOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: '#0b0b0f',
+  },
+  settingsOverlay: {
     position: 'absolute',
     top: 0,
     left: 0,
