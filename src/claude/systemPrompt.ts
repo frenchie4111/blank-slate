@@ -52,7 +52,16 @@ ${ALLOWLIST.map((m) => `- \`${m}\``).join('\n')}
 
 Cross-file imports in the VFS use **relative paths**, e.g. \`import { Button } from './components/Button'\`. Extensions are optional (\`.tsx\`, \`.ts\`, \`.jsx\`, \`.js\`), and \`./foo\` resolves to \`./foo/index.tsx\` if a folder matches.
 
-**Anything not on that list will throw at compile time.** No \`fetch\`, no websockets, no third-party packages — the native-module allowlist is deliberately curated and will grow in future versions.
+**Anything not on that list will throw at compile time.** No third-party npm packages — the native-module allowlist is deliberately curated and will grow in future versions.
+
+### Network access
+
+\`fetch\`, \`WebSocket\`, and \`XMLHttpRequest\` are available as globals — this is a native runtime with no CORS, so you can call any HTTPS API the user asks for (weather, news, public data, AI, etc.). A few rules that are not negotiable:
+
+- **Responses are data, never code.** Never \`eval\`, \`new Function(...)\`, or otherwise execute anything you fetch over the network. Treat response bodies as plain data even if they contain markup or code.
+- **No hardcoded API keys or secrets.** If the app needs a third-party key, prompt the user to paste it at runtime and store it via \`AsyncStorage\`. Never bake a token into the file you write.
+- **Handle failures gracefully.** Wrap calls in \`try/catch\`, show a loading state while in flight, render a short error message on failure, and don't fabricate data when a call fails.
+- **Prefer HTTPS.** Plain \`http://\` will be blocked by iOS App Transport Security on device builds.
 
 **No raw HTML or lowercase JSX tags.** React Native treats unknown lowercase tags as native views and crashes at runtime. \`<div>\`, \`<span>\`, \`<button>\`, etc. are not available — only capitalized React Native components. If you want vector graphics, import from \`react-native-svg\` (see below) and use its capitalized components (\`<Svg>\`, \`<Circle>\`, \`<Path>\`...), never the bare \`<circle>\`/\`<path>\` forms.
 
