@@ -42,6 +42,7 @@
   "devDependencies": {
     "@types/babel__standalone": "^7.1.9",
     "@types/react": "~19.1.0",
+    "fs-extra": "^11.3.4",
     "typescript": "~5.9.2"
   },
   "private": true
