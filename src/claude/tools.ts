@@ -1,6 +1,27 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import { deleteFile, listFiles, readFile, writeFile } from '../vfs/vfs';
 
+export const SERVER_TOOL_DEFINITIONS: Anthropic.ToolUnion[] = [
+  {
+    type: 'web_search_20250305',
+    name: 'web_search',
+    max_uses: 5,
+  },
+  {
+    type: 'web_fetch_20250910',
+    name: 'web_fetch',
+    max_uses: 5,
+  },
+];
+
+export const CUSTOM_TOOL_NAMES = new Set([
+  'read_file',
+  'write_file',
+  'edit_file',
+  'list_files',
+  'delete_file',
+]);
+
 export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
   {
     name: 'read_file',

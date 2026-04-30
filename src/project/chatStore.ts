@@ -1,5 +1,6 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import type { ServerToolResult } from '../claude/agent';
 import { chatEntriesKeyFor, chatHistoryKeyFor } from './store';
 
 export type ToolEntry = {
@@ -11,10 +12,20 @@ export type ToolEntry = {
   result?: { ok: boolean; text: string };
 };
 
+export type ServerToolEntry = {
+  kind: 'serverTool';
+  id: string;
+  blockIndex: number;
+  name: 'web_search' | 'web_fetch';
+  input: Record<string, unknown>;
+  result?: ServerToolResult;
+};
+
 export type Entry =
   | { kind: 'user'; id: string; text: string }
   | { kind: 'assistant'; id: string; blockIndex: number; text: string }
   | ToolEntry
+  | ServerToolEntry
   | { kind: 'error'; id: string; text: string };
 
 export type ChatSnapshot = {

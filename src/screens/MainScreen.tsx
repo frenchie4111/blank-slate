@@ -24,6 +24,7 @@ import {
   loadChat,
   saveChat,
   type Entry,
+  type ServerToolEntry,
   type ToolEntry,
 } from '../project/chatStore';
 import * as projectStore from '../project/store';
@@ -158,6 +159,26 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
         const copy = prev.slice();
         const existing = copy[idx] as ToolEntry;
         copy[idx] = { ...existing, result: { ok: ev.ok, text: ev.text } };
+        return copy;
+      });
+    } else if (ev.type === 'server_tool_use') {
+      setEntries((prev) => [
+        ...prev,
+        {
+          kind: 'serverTool',
+          id: ev.id,
+          blockIndex: ev.blockIndex,
+          name: ev.name,
+          input: ev.input,
+        },
+      ]);
+    } else if (ev.type === 'server_tool_result') {
+      setEntries((prev) => {
+        const idx = prev.findIndex((e) => e.kind === 'serverTool' && e.id === ev.id);
+        if (idx < 0) return prev;
+        const copy = prev.slice();
+        const existing = copy[idx] as ServerToolEntry;
+        copy[idx] = { ...existing, result: ev.result };
         return copy;
       });
     } else if (ev.type === 'error') {
@@ -633,7 +654,88 @@ function EntryView({ entry }: { entry: Entry }) {
       </View>
     );
   }
+  if (entry.kind === 'serverTool') {
+    return <ServerToolCard entry={entry} />;
+  }
   return <ToolCard entry={entry} />;
+}
+
+function ServerToolCard({ entry }: { entry: ServerToolEntry }) {
+  const [expanded, setExpanded] = React.useState(false);
+  const iconName = entry.name === 'web_search' ? 'search-outline' : 'globe-outline';
+  const label =
+    entry.name === 'web_search'
+      ? `web_search(${JSON.stringify(entry.input.query ?? '')})`
+      : `web_fetch(${stringOr(entry.input.url, '')})`;
+  const result = entry.result;
+  return (
+    <Pressable onPress={() => setExpanded((v) => !v)} style={styles.serverToolCard}>
+      <View style={styles.toolHeader}>
+        <Ionicons name={iconName} size={14} color="#93c5fd" style={styles.serverToolIcon} />
+        <Text style={styles.toolSummary} numberOfLines={expanded ? 0 : 1}>
+          {label}
+        </Text>
+        {result ? (
+          <Text
+            style={[
+              styles.toolStatus,
+              result.kind === 'error' ? styles.toolErr : styles.toolOk,
+            ]}
+          >
+            {result.kind === 'error' ? '✗' : '✓'}
+          </Text>
+        ) : (
+          <ActivityIndicator size="small" color="#6b7280" />
+        )}
+      </View>
+      {expanded ? (
+        <View style={styles.toolBody}>
+          {renderServerToolBody(entry)}
+        </View>
+      ) : null}
+    </Pressable>
+  );
+}
+
+function renderServerToolBody(entry: ServerToolEntry): React.ReactNode {
+  const result = entry.result;
+  if (!result) {
+    return <Text style={styles.toolDetail}>…</Text>;
+  }
+  if (result.kind === 'error') {
+    return <Text style={styles.toolDetail}>error: {result.error_code}</Text>;
+  }
+  if (result.kind === 'web_search') {
+    if (result.results.length === 0) {
+      return <Text style={styles.toolDetail}>(no results)</Text>;
+    }
+    return (
+      <View style={{ gap: 6 }}>
+        {result.results.map((r, i) => (
+          <View key={`${r.url}-${i}`} style={{ gap: 2 }}>
+            <Text style={styles.searchTitle} numberOfLines={2}>
+              {r.title}
+            </Text>
+            <Text style={styles.searchUrl} numberOfLines={1}>
+              {r.url}
+            </Text>
+          </View>
+        ))}
+      </View>
+    );
+  }
+  return (
+    <View style={{ gap: 4 }}>
+      {result.title ? <Text style={styles.searchTitle}>{result.title}</Text> : null}
+      <Text style={styles.searchUrl} numberOfLines={1}>
+        {result.url}
+      </Text>
+      {result.retrieved_at ? (
+        <Text style={styles.toolLabel}>retrieved {result.retrieved_at}</Text>
+      ) : null}
+      <Text style={styles.toolDetail}>{result.preview}</Text>
+    </View>
+  );
 }
 
 function ToolCard({ entry }: { entry: ToolEntry }) {
@@ -884,6 +986,22 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     paddingVertical: 8,
     paddingHorizontal: 10,
+  },
+  serverToolCard: {
+    alignSelf: 'stretch',
+    backgroundColor: '#0b1b2b',
+    borderColor: '#1e3a5f',
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+  },
+  serverToolIcon: { width: 16, textAlign: 'center' },
+  searchTitle: { color: '#e5e7eb', fontSize: 12, fontWeight: '600' },
+  searchUrl: {
+    color: '#60a5fa',
+    fontSize: 11,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
   },
   toolHeader: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   toolIcon: { fontSize: 14, color: '#9ca3af', width: 16, textAlign: 'center' },
