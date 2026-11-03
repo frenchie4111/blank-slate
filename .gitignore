@@ -46,3 +46,5 @@ yarn-error.*
 /ios
 /android
 .claude/settings.local.json
+
+.env
