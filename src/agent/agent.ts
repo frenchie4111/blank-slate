@@ -234,7 +234,7 @@ export function runAgentTurn(
   };
 }
 
-// The system prompt (one of two variants, by the auto-icon setting) and tool
+// The system prompt (one variant per auto-icon setting and platform) and tool
 // list are identical from request to request, so they form a stable cache
 // prefix; history is append-only after them. The breakpoint on
 // the system block is what Anthropic, Gemini and Qwen need for explicit

@@ -48,3 +48,4 @@ yarn-error.*
 .claude/settings.local.json
 
 .env
+renderer/

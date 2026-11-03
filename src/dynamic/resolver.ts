@@ -1,7 +1,9 @@
 import type { ComponentType } from 'react';
 import { moduleScope } from '../debug/instrument';
+import { getCurrentProjectIdSync } from '../project/store';
+import { sandboxedBuiltin, sandboxedScope } from '../sandbox';
 import { isImagePath, readFile } from '../vfs/vfs';
-import { BUILTIN_MODULES, ALLOWLIST, isBuiltin } from './requireShim';
+import { ALLOWLIST, isBuiltin } from './requireShim';
 import { transpile } from './transpile';
 
 type Exports = Record<string, unknown>;
@@ -103,10 +105,14 @@ function fail(stage: CompileStage, path: string, cause: unknown): never {
   throw new CompilationError({ stage, path, message, stack });
 }
 
+// Compiled exports close over the project's sandboxed modules, so the cache
+// is per project: identical files in two apps must not share exports.
 async function compileFile(
   path: string,
   inFlight: Map<string, Exports>,
+  projectId: string,
 ): Promise<Exports> {
+  const cacheKey = `${projectId}\0${path}`;
   const content = await readFile(path);
   if (content === null) fail('missing', path, `File not found: ${path}`);
 
@@ -120,7 +126,7 @@ async function compileFile(
   }
 
   const hash = hashContent(content);
-  const cached = moduleCache.get(path);
+  const cached = moduleCache.get(cacheKey);
   if (cached && cached.hash === hash) return cached.exports;
 
   const inProgress = inFlight.get(path);
@@ -141,7 +147,7 @@ async function compileFile(
 
   for (const spec of specs) {
     if (isBuiltin(spec)) {
-      resolvedDeps.set(spec, BUILTIN_MODULES[spec]);
+      resolvedDeps.set(spec, sandboxedBuiltin(projectId, spec));
       continue;
     }
     if (spec.startsWith('.') || spec.startsWith('/')) {
@@ -154,7 +160,7 @@ async function compileFile(
             `Tried ${CANDIDATE_EXTS.map((e) => `<path>${e}`).join(', ')} and index variants.`,
         );
       }
-      const depExports = await compileFile(resolved, inFlight);
+      const depExports = await compileFile(resolved, inFlight, projectId);
       resolvedDeps.set(spec, depExports);
       continue;
     }
@@ -168,37 +174,41 @@ async function compileFile(
 
   const requireFn = (spec: string): unknown => {
     if (resolvedDeps.has(spec)) return resolvedDeps.get(spec);
-    if (isBuiltin(spec)) return BUILTIN_MODULES[spec];
+    if (isBuiltin(spec)) return sandboxedBuiltin(projectId, spec);
     throw new Error(`Runtime require for unresolved "${spec}" in ${path}`);
   };
 
   const moduleObj = { exports: moduleExports };
   try {
     // console, fetch, timers etc. are scoped bindings that feed the debug
-    // history. sourceURL makes stack frames read `vfs:///App.tsx:12:5`.
+    // history; the sandbox scope shadows storage globals (localStorage,
+    // window, document…) per project. sourceURL makes stack frames read
+    // `vfs:///App.tsx:12:5`.
     const scope = moduleScope();
+    const sandbox = sandboxedScope(projectId);
     const fn = new Function(
       'require',
       'module',
       'exports',
       ...scope.names,
+      ...sandbox.names,
       `${js}\n//# sourceURL=vfs:///${path}`,
     );
-    fn(requireFn, moduleObj, moduleObj.exports, ...scope.values);
+    fn(requireFn, moduleObj, moduleObj.exports, ...scope.values, ...sandbox.values);
   } catch (e) {
     inFlight.delete(path);
     fail('execute', path, e);
   }
 
   const finalExports = moduleObj.exports as Exports;
-  moduleCache.set(path, { hash, exports: finalExports });
+  moduleCache.set(cacheKey, { hash, exports: finalExports });
   inFlight.delete(path);
   return finalExports;
 }
 
 export async function compileEntry(entry = 'App.tsx'): Promise<CompileResult> {
   try {
-    const exports = await compileFile(entry, new Map());
+    const exports = await compileFile(entry, new Map(), getCurrentProjectIdSync());
     const candidate = (exports.default ?? exports) as unknown;
     if (typeof candidate !== 'function' && typeof candidate !== 'object') {
       return {

@@ -1,0 +1,82 @@
+{
+  "name": "blank-slate-desktop",
+  "productName": "Blank Slate",
+  "version": "0.0.0-dev",
+  "description": "Blank Slate on the desktop: the Expo web build in an Electron window.",
+  "author": "Mike Lyons",
+  "license": "UNLICENSED",
+  "private": true,
+  "main": "src/main.js",
+  "scripts": {
+    "renderer": "cd .. && npx expo export -p web --output-dir desktop/renderer",
+    "start": "npm run renderer && electron .",
+    "pack": "npm run renderer && node scripts/build.mjs --dir --no-sign",
+    "dist": "npm run renderer && node scripts/build.mjs"
+  },
+  "build": {
+    "appId": "org.mikelyons.blank-slate.desktop",
+    "productName": "Blank Slate",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "src/**/*",
+      "renderer/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "icon": "../assets/icon.png",
+      "identity": "Michael Lyons (M7Y6TPCQ63)",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "extendInfo": {
+        "NSCameraUsageDescription": "Blank Slate uses the camera if an app you build asks for it.",
+        "NSMicrophoneUsageDescription": "Blank Slate uses the microphone if an app you build records audio.",
+        "NSLocationUsageDescription": "Blank Slate uses your location if an app you build needs it (e.g. weather, check-ins).",
+        "NSLocationWhenInUseUsageDescription": "Blank Slate uses your location if an app you build needs it (e.g. weather, check-ins)."
+      },
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ]
+    },
+    "win": {
+      "icon": "../assets/icon.png",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "electronFuses": {
+      "runAsNode": false,
+      "enableCookieEncryption": true,
+      "enableNodeOptionsEnvironmentVariable": false,
+      "enableNodeCliInspectArguments": false,
+      "enableEmbeddedAsarIntegrityValidation": true,
+      "onlyLoadAppFromAsar": true
+    }
+  },
+  "devDependencies": {
+    "electron": "^44.5.1",
+    "electron-builder": "^26.17.0"
+  }
+}

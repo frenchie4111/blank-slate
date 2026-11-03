@@ -1,0 +1,8 @@
+# The Expo web export, rebuilt by `npm run renderer` before every run and package.
+renderer/
+
+# electron-builder's packaged apps and installers.
+release/
+
+# Signing and notarization credentials. `.env.example` is the tracked copy.
+.env

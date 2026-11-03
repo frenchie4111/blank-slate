@@ -1,6 +1,7 @@
 import { ALLOWLIST } from '../dynamic/requireShim';
+import { runtimePlatform, type RuntimePlatform } from '../platform/desktop';
 
-const buildPrompt = (iconSection: string) => `You are the in-app software engineer for **Blank Slate** — a mobile app whose UI is literally whatever React Native TypeScript code lives in its virtual filesystem. The user chats with you; you edit files with the tools below; the bottom half of the screen re-renders \`App.tsx\` live.
+const buildPrompt = (iconSection: string, platformNotes: string) => `You are the in-app software engineer for **Blank Slate** — a mobile app whose UI is literally whatever React Native TypeScript code lives in its virtual filesystem. The user chats with you; you edit files with the tools below; the bottom half of the screen re-renders \`App.tsx\` live.
 
 You are writing a real React Native + TypeScript app. Treat it like one: small files, clear names, compose components, keep state with hooks.
 
@@ -105,6 +106,8 @@ Cross-file imports in the VFS use **relative paths**, e.g. \`import { Button } f
 
 **Anything not on that list will throw at compile time.** No third-party npm packages — the native-module allowlist is deliberately curated and will grow in future versions.
 
+**Each app has its own private storage.** Use \`AsyncStorage\` and \`expo-sqlite\` normally with plain keys and file names (\`'notes'\`, \`'app.db'\`); they're automatically scoped to this app. Don't try to read other apps' data or Blank Slate's own.
+
 ### Network access
 
 \`fetch\`, \`WebSocket\`, and \`XMLHttpRequest\` are available as globals — this is a native runtime with no CORS, so you can call any HTTPS API the user asks for (weather, news, public data, AI, etc.). A few rules that are not negotiable:
@@ -115,7 +118,7 @@ Cross-file imports in the VFS use **relative paths**, e.g. \`import { Button } f
 - **Prefer HTTPS.** Plain \`http://\` will be blocked by iOS App Transport Security on device builds.
 
 **No raw HTML or lowercase JSX tags.** React Native treats unknown lowercase tags as native views and crashes at runtime. \`<div>\`, \`<span>\`, \`<button>\`, etc. are not available — only capitalized React Native components. If you want vector graphics, import from \`react-native-svg\` (see below) and use its capitalized components (\`<Svg>\`, \`<Circle>\`, \`<Path>\`...), never the bare \`<circle>\`/\`<path>\` forms.
-
+${platformNotes}
 ### Using \`react-native-svg\`
 
 \`\`\`tsx
@@ -192,12 +195,43 @@ ${ICON_PROMPT_RULES}
 
 `;
 
-// Two fixed variants rather than per-turn state, so each stays a stable cache
-// prefix; flipping the setting costs one cache miss. (Per-turn icon status in
-// the user message made GLM 5.3 plan whole builds in its reasoning.)
-const PROMPT_AUTO_ICONS = buildPrompt(AUTO_ICONS_SECTION);
-const PROMPT_MANUAL_ICONS = buildPrompt(MANUAL_ICONS_SECTION);
+const DESKTOP_NOTES = `- Blank Slate is running as a desktop app, so this app runs in a desktop window (the web build of React Native), not on a phone.
+- \`fetch\` is not limited by CORS here, same as on a phone.`;
+
+const WEB_NOTES = `- Blank Slate is running in a web browser, so this app runs in a browser tab (the web build of React Native), not on a phone.
+- \`fetch\` is subject to browser CORS: APIs that don't send CORS headers will fail. Prefer APIs that allow browser calls.`;
+
+const platformSection = (notes: string) => `
+### Platform: desktop / web
+
+${notes}
+- Haptics are silent no-ops. Camera and location may be unavailable or need a permission prompt; handle denial.
+- Image picking opens a file dialog. \`launchCameraAsync\` may also just open a file dialog.
+- Design at phone size (~430pt wide) but keep the layout sensible if the window is resized wider or taller.
+`;
+
+const PLATFORM_SECTIONS: Record<RuntimePlatform, string> = {
+  native: '',
+  desktop: platformSection(DESKTOP_NOTES),
+  web: platformSection(WEB_NOTES),
+};
+
+// Fixed variants rather than per-turn state, so each stays a stable cache
+// prefix; flipping the icon setting costs one cache miss, and the platform
+// never changes within a run. (Per-turn icon status in the user message made
+// GLM 5.3 plan whole builds in its reasoning.)
+const prompts = new Map<string, string>();
 
 export function systemPromptFor(autoAppIcons: boolean): string {
-  return autoAppIcons ? PROMPT_AUTO_ICONS : PROMPT_MANUAL_ICONS;
+  const platform = runtimePlatform();
+  const id = `${platform}:${autoAppIcons}`;
+  let prompt = prompts.get(id);
+  if (!prompt) {
+    prompt = buildPrompt(
+      autoAppIcons ? AUTO_ICONS_SECTION : MANUAL_ICONS_SECTION,
+      PLATFORM_SECTIONS[platform],
+    );
+    prompts.set(id, prompt);
+  }
+  return prompt;
 }

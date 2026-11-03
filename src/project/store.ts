@@ -1,5 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { defaultTint, type Glyph, type Tint } from './appearance';
+import { removeAppData } from '../sandbox/cleanup';
+import { migrateLegacyAppData } from '../sandbox/migrate';
 
 export type Project = {
   id: string;
@@ -211,6 +213,7 @@ export function init(): Promise<void> {
       if (storedCurrent !== valid.id) {
         await AsyncStorage.setItem(CURRENT_PROJECT_KEY, valid.id);
       }
+      await migrateLegacyAppData(existing.map((p) => p.id));
       initialized = true;
       return;
     }
@@ -225,6 +228,7 @@ export function init(): Promise<void> {
     const project: Project = { id, name: 'First app', createdAt: now, updatedAt: now };
     await saveProjects([project]);
     await AsyncStorage.setItem(CURRENT_PROJECT_KEY, id);
+    await migrateLegacyAppData([id]);
     currentProjectId = id;
     initialized = true;
   })();
@@ -329,6 +333,7 @@ export async function remove(id: string): Promise<void> {
     } catch {}
   }
   await AsyncStorage.multiRemove(toRemove);
+  await removeAppData(id);
   await saveProjects(remaining);
 
   if (currentProjectId === id) {
