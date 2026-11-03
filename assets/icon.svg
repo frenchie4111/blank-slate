@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- Blank Slate logo mark ("Slate & Chalk", design/boards/Main.dc.html):
+       a chalk rounded-square outline with a yellow bar bottom-right. Drawn on
+       a 40-unit grid with the same proportions as src/theme/LogoMark.tsx
+       (radius 1/4, 2.5 stroke, bar 1/3 wide x 4 inset 1/8 inside the stroke)
+       and scaled x16, so the mark fills 62.5% of the slate ground.
+       Full-bleed: iOS rounds the corners. Rasterised by scripts/build-icons.sh. -->
+  <rect width="1024" height="1024" fill="#121316"/>
+  <g transform="translate(192 192) scale(16)">
+    <rect x="1.25" y="1.25" width="37.5" height="37.5" rx="8.75" fill="none" stroke="#EDEBE6" stroke-width="2.5"/>
+    <rect x="19.1667" y="28.5" width="13.3333" height="4" rx="2" fill="#E8C547"/>
+  </g>
+</svg>

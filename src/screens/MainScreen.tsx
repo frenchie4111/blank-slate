@@ -2,7 +2,6 @@ import { Ionicons } from '@expo/vector-icons';
 import React from 'react';
 import {
   ActivityIndicator,
-  Image,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -31,13 +30,12 @@ import { getModel } from '../storage/keyStore';
 import { colors, fonts, radii, space } from '../theme';
 import { LogoMark } from '../theme/LogoMark';
 import * as vfs from '../vfs/vfs';
+import { DraggableBadge } from './DraggableBadge';
 import { FilesPanel } from './FileViewer';
 import { Markdown } from './Markdown';
 import { SettingsScreen } from './SettingsScreen';
 import { buildRenderItems, ToolGroupCard, type RenderItem } from './ToolGroup';
 import { YourAppsScreen } from './YourAppsScreen';
-
-const ICON_SRC = require('../../assets/icon.png');
 
 type Props = { apiKey: string; onResetKey: () => void };
 
@@ -335,14 +333,14 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
       </View>
 
       {chatVisible ? null : (
-        <Pressable
+        <DraggableBadge
+          size={56}
           style={styles.floatingBadge}
           onPress={() => setChatVisible(true)}
-          hitSlop={10}
           accessibilityLabel="Open Blank Slate chat"
         >
-          <Image source={ICON_SRC} style={styles.floatingBadgeIcon} />
-        </Pressable>
+          <LogoMark size={24} />
+        </DraggableBadge>
       )}
 
       {chatVisible ? (
@@ -663,27 +661,15 @@ const styles = StyleSheet.create({
   appLayer: { flex: 1 },
   pressed: { opacity: 0.7 },
   floatingBadge: {
-    // Positioned so the 26px icon centered inside this 44px badge lines
-    // up with the 26px chat-header icon at paddingHorizontal:16,
-    // paddingTop:(ios?48:32) — i.e. top-left offset by (44-26)/2 = 9 px.
-    position: 'absolute',
-    top: Platform.OS === 'ios' ? 39 : 23,
-    left: 7,
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: 'rgba(11, 11, 15, 0.72)',
+    // Position and size come from DraggableBadge.
+    backgroundColor: colors.board,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: colors.lineStrong,
     alignItems: 'center',
     justifyContent: 'center',
-    shadowColor: '#000',
-    shadowOpacity: 0.35,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 6,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
+    boxShadow: '0 8px 24px rgba(0, 0, 0, 0.45)',
   },
-  floatingBadgeIcon: { width: 26, height: 26, borderRadius: 6 },
   chatOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: colors.slate },
   fullOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: colors.slate },
 

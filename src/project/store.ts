@@ -28,8 +28,8 @@ export default function App() {
     <View style={styles.wrap}>
       <Text style={styles.title}>Blank Slate</Text>
       <Text style={styles.body}>
-        Tap the badge in the top-left to chat with the agent about what this app
-        should become.
+        Tap the floating badge to chat with the agent about what this app
+        should become. Drag it anywhere if it's in the way.
       </Text>
     </View>
   );
