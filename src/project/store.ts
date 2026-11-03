@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { defaultTint, type Glyph, type Tint } from './appearance';
+import { defaultTint, isGlyph, isTint, type Glyph, type Tint } from './appearance';
 import { removeAppData } from '../sandbox/cleanup';
 import { migrateLegacyAppData } from '../sandbox/migrate';
 
@@ -20,6 +20,27 @@ export type Project = {
   // agent's set_app_name must leave it alone. Missing on older projects: read
   // it with isNameSetByUser().
   nameSetByUser?: boolean;
+  // Set on apps added from a .blankslate file (src/share/bundle.ts). Their
+  // code came from someone else, so the first open asks first.
+  importedFrom?: ImportedFrom;
+};
+
+export type ImportedFrom = {
+  originalName: string;
+  exportedAt: number;
+  importedAt: number;
+  untrusted: true;
+  // When the user accepted the trust notice; missing until then.
+  acknowledgedAt?: number;
+};
+
+// What createFromBundle needs from a validated bundle (src/share/bundle.ts).
+export type BundleContents = {
+  manifest: {
+    app: { name: string; exportedAt: number; tint?: string; glyph?: string; iconPath?: string };
+  };
+  files: Map<string, string>;
+  chat: { history: unknown[]; entries: unknown[] } | null;
 };
 
 export const MAX_NAME_LENGTH = 40;
@@ -268,6 +289,70 @@ export async function create(
   await saveProjects([...projects, project]);
   emit();
   return project;
+}
+
+// "Tip Calc" → "Tip Calc 2" → "Tip Calc 3"…, trimmed to fit MAX_NAME_LENGTH.
+export function uniqueName(name: string, taken: string[]): string {
+  const used = new Set(taken.map((n) => n.toLowerCase()));
+  if (!used.has(name.toLowerCase())) return name;
+  for (let n = 2; ; n++) {
+    const suffix = ` ${n}`;
+    const candidate = name.slice(0, MAX_NAME_LENGTH - suffix.length).trim() + suffix;
+    if (!used.has(candidate.toLowerCase())) return candidate;
+  }
+}
+
+// Adds an imported app as a brand-new project. Files go straight into the new
+// id's keys, so the current project is untouched; the new app's sandboxed
+// storage starts empty because nothing has ever been written under its id.
+export async function createFromBundle(bundle: BundleContents): Promise<Project> {
+  const projects = await loadProjects();
+  const id = newId();
+  const now = Date.now();
+  const { app } = bundle.manifest;
+  const original = cleanName(app.name) || 'Shared app';
+  const name = uniqueName(original, projects.map((p) => p.name));
+
+  const paths = [...bundle.files.keys()];
+  await AsyncStorage.multiSet(paths.map((p) => [fileKeyFor(id, p), bundle.files.get(p)!]));
+  await AsyncStorage.setItem(indexKeyFor(id), JSON.stringify(paths));
+  if (bundle.chat) {
+    await AsyncStorage.multiSet([
+      [chatHistoryKeyFor(id), JSON.stringify(bundle.chat.history)],
+      [chatEntriesKeyFor(id), JSON.stringify(bundle.chat.entries)],
+    ]);
+  }
+
+  const project: Project = {
+    id,
+    name,
+    createdAt: now,
+    updatedAt: now,
+    nameSetByUser: true,
+    tint: isTint(app.tint) ? app.tint : defaultTint(id),
+    ...(isGlyph(app.glyph) ? { glyph: app.glyph } : {}),
+    ...(app.iconPath && bundle.files.has(app.iconPath) ? { iconPath: app.iconPath } : {}),
+    importedFrom: { originalName: app.name.slice(0, 200), exportedAt: app.exportedAt, importedAt: now, untrusted: true },
+  };
+  await saveProjects([...projects, project]);
+  emit();
+  return project;
+}
+
+/** An imported app still waiting for the user to accept the trust notice. */
+export function needsTrustNotice(p: Project | null | undefined): boolean {
+  return !!p?.importedFrom && !p.importedFrom.acknowledgedAt;
+}
+
+export async function acknowledgeImport(id: string): Promise<void> {
+  const projects = await loadProjects();
+  const idx = projects.findIndex((p) => p.id === id);
+  const from = idx >= 0 ? projects[idx].importedFrom : undefined;
+  if (!from || from.acknowledgedAt) return;
+  const next = projects.slice();
+  next[idx] = { ...next[idx], importedFrom: { ...from, acknowledgedAt: Date.now() } };
+  await saveProjects(next);
+  emit();
 }
 
 export async function switchTo(id: string): Promise<void> {

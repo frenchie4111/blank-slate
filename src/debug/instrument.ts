@@ -554,3 +554,45 @@ export function instrumentedReactNative(): Record<string, unknown> {
   instrumentedRN = out;
   return out;
 }
+
+// ---- expo-sensors ------------------------------------------------------------------
+
+let instrumentedSensorsCache: Record<string, unknown> | null = null;
+
+/**
+ * expo-sensors as generated code sees it: listener callbacks (sensor updates,
+ * step counts) report thrown errors to the history like timer callbacks do,
+ * instead of dying silently inside the native event emitter.
+ */
+export function instrumentedSensors(mod: Record<string, any>): Record<string, unknown> {
+  if (instrumentedSensorsCache) return instrumentedSensorsCache;
+  const out: Record<string, unknown> = {};
+  for (const key of Object.keys(mod)) {
+    const real = mod[key];
+    if (real && typeof real === 'object' && typeof real.addListener === 'function') {
+      out[key] = new Proxy(real, {
+        get(target, prop) {
+          if (prop === 'addListener') {
+            return (listener: (...a: unknown[]) => void) =>
+              target.addListener(guarded(listener, 'sensor', () => `in ${key} listener`));
+          }
+          const v = Reflect.get(target, prop);
+          return typeof v === 'function' ? v.bind(target) : v;
+        },
+      });
+    } else {
+      out[key] = real;
+    }
+  }
+  // Pedometer is a namespace of functions rather than a sensor object.
+  const pedometer = mod.Pedometer as Record<string, any> | undefined;
+  if (pedometer && typeof pedometer.watchStepCount === 'function') {
+    out.Pedometer = Object.freeze({
+      ...pedometer,
+      watchStepCount: (cb: (...a: unknown[]) => void) =>
+        pedometer.watchStepCount(guarded(cb, 'sensor', () => 'in Pedometer.watchStepCount callback')),
+    });
+  }
+  instrumentedSensorsCache = Object.freeze(out);
+  return instrumentedSensorsCache;
+}

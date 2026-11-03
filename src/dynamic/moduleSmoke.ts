@@ -19,6 +19,7 @@ import { VideoView } from 'expo-video';
 import * as Notifications from 'expo-notifications';
 import * as Location from 'expo-location';
 import { BlurView } from 'expo-blur';
+import { Accelerometer, Pedometer } from 'expo-sensors';
 
 // Reference every imported symbol so no optimizer can drop it.
 const refs: Array<unknown> = [
@@ -38,6 +39,7 @@ const refs: Array<unknown> = [
   Notifications,
   Location,
   BlurView,
+  Accelerometer, Pedometer,
 ];
 
 function assertDefined(label: string, v: unknown): void {
@@ -68,6 +70,9 @@ assertDefined('Notifications.scheduleNotificationAsync', Notifications.scheduleN
 assertDefined('Location', Location);
 assertDefined('Location.getCurrentPositionAsync', Location.getCurrentPositionAsync);
 assertDefined('BlurView', BlurView);
+assertDefined('Accelerometer.isAvailableAsync', Accelerometer.isAvailableAsync);
+assertDefined('Accelerometer.addListener', Accelerometer.addListener);
+assertDefined('Pedometer.watchStepCount', Pedometer.watchStepCount);
 
 export default function Smoke() {
   void refs;

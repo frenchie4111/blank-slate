@@ -14,7 +14,24 @@ import * as Notifications from 'expo-notifications';
 import * as Location from 'expo-location';
 import * as Blur from 'expo-blur';
 import * as ReactNativeSvg from 'react-native-svg';
-import { instrumentedReactNative } from '../debug/instrument';
+import { instrumentedReactNative, instrumentedSensors } from '../debug/instrument';
+
+// expo-sensors is newer than some binaries this JS reaches over the air, and
+// it touches its native modules as soon as it's evaluated. Loaded on first
+// import, so a missing module is a compile error in the app that wanted it
+// rather than a crash at startup.
+let sensors: Record<string, unknown> | null | undefined;
+function loadSensors(): Record<string, unknown> {
+  if (sensors === undefined) {
+    try {
+      sensors = instrumentedSensors(require('expo-sensors'));
+    } catch {
+      sensors = null;
+    }
+  }
+  if (!sensors) throw new Error('expo-sensors needs a newer build of Blank Slate. Update the app to use it.');
+  return sensors;
+}
 
 export const BUILTIN_MODULES: Record<string, unknown> = {
   react: React,
@@ -37,6 +54,9 @@ export const BUILTIN_MODULES: Record<string, unknown> = {
   'expo-location': Location,
   'expo-blur': Blur,
   'react-native-svg': ReactNativeSvg,
+  get 'expo-sensors'() {
+    return loadSensors();
+  },
 };
 
 export const ALLOWLIST = Object.keys(BUILTIN_MODULES);

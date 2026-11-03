@@ -101,6 +101,7 @@ ${ALLOWLIST.map((m) => `- \`${m}\``).join('\n')}
 - \`expo-location\` — geolocation: \`await Location.requestForegroundPermissionsAsync()\`, then \`await Location.getCurrentPositionAsync()\` or \`watchPositionAsync\`.
 - \`expo-blur\` — iOS-style frosted blur: \`<BlurView intensity={50} tint="light" style={...}>\`. Great for overlays and translucent headers.
 - \`react-native-svg\` — real vector shapes: \`<Svg>\`, \`<Circle>\`, \`<Path>\`, \`<G>\`. See the dedicated section below.
+- \`expo-sensors\` — motion and environment sensors: \`Accelerometer\`, \`Gyroscope\`, \`Magnetometer\`, \`DeviceMotion\`, \`Pedometer\`, \`Barometer\`, \`LightSensor\`. Always \`await X.isAvailableAsync()\` first and show a friendly fallback when it's false; call \`X.setUpdateInterval(ms)\` (e.g. 100) before \`const sub = X.addListener(cb)\`, and \`sub.remove()\` in the effect cleanup on unmount. The iOS Simulator and desktop/web have no real sensors, so the fallback is what they show.
 
 Cross-file imports in the VFS use **relative paths**, e.g. \`import { Button } from './components/Button'\`. Extensions are optional (\`.tsx\`, \`.ts\`, \`.jsx\`, \`.js\`), and \`./foo\` resolves to \`./foo/index.tsx\` if a folder matches.
 

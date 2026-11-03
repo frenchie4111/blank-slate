@@ -3,6 +3,7 @@ import React from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
+  Linking,
   Platform,
   Pressable,
   StyleSheet,
@@ -28,6 +29,8 @@ import {
 } from '../project/chatStore';
 import * as projectStore from '../project/store';
 import type { Project } from '../project/store';
+import { isBundleUrl, readIncomingBundle, type PickedBundle } from '../share/io';
+import { ShareSheet } from '../share/ShareSheet';
 import { getAutoAppIcons, getModel } from '../storage/keyStore';
 import { colors, fonts, radii, space } from '../theme';
 import { SIDEBAR_WIDTH, useWideLayout } from '../theme/layout';
@@ -41,6 +44,10 @@ import { SettingsScreen } from './SettingsScreen';
 import { YourAppsScreen } from './YourAppsScreen';
 
 type Props = { apiKey: string; onResetKey: () => void };
+
+// chat: open the chat rather than the preview. draft: text to leave in the
+// composer, unsent.
+type EnterOpts = { chat?: boolean; draft?: string };
 
 export function MainScreen({ apiKey, onResetKey }: Props) {
   const insets = useSafeAreaInsets();
@@ -68,6 +75,13 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
   const [activeTab, setActiveTab] = React.useState<'chat' | 'files' | 'history'>('chat');
   const [renderRevision, setRenderRevision] = React.useState(0);
   const [renderError, setRenderError] = React.useState<RenderError | null>(null);
+  const [sharing, setSharing] = React.useState<Project | null>(null);
+  // An imported app waiting on the one-time trust notice before it opens.
+  const [pendingTrust, setPendingTrust] = React.useState<{ project: Project; opts: EnterOpts } | null>(
+    null,
+  );
+  // A .blankslate file iOS opened us with; Your apps imports it.
+  const [incoming, setIncoming] = React.useState<PickedBundle | null>(null);
 
   const historyRef = React.useRef<ChatMessage[]>([]);
   const runRef = React.useRef<AgentRun | null>(null);
@@ -399,6 +413,31 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
     return () => window.removeEventListener('keydown', onKey);
   }, [wide]);
 
+  // Files opened from Files, Messages or AirDrop arrive as file:// URLs, at
+  // launch or while running. Your apps does the import.
+  React.useEffect(() => {
+    if (Platform.OS === 'web') return;
+    let alive = true;
+    const handle = (url: string | null) => {
+      if (!isBundleUrl(url)) return;
+      readIncomingBundle(url)
+        .then((picked) => {
+          if (!alive) return;
+          setIncoming(picked);
+          setSettingsVisible(false);
+          setAppsOpen(true);
+        })
+        .catch((e) => console.warn('[share] could not read incoming file', e));
+    };
+    Linking.getInitialURL().then(handle, () => {});
+    const sub = Linking.addEventListener('url', ({ url }) => handle(url));
+    return () => {
+      alive = false;
+      sub.remove();
+    };
+  }, []);
+  const clearIncoming = React.useCallback(() => setIncoming(null), []);
+
   const askAgent = React.useCallback((text: string) => {
     setInput(text);
     setActiveTab('chat');
@@ -412,8 +451,14 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
   };
 
   // Leaves home for a project: its preview, or its chat when there's nothing
-  // to look at yet (a new or untouched app).
-  const enterApp = async (id: string, opts: { chat?: boolean } = {}) => {
+  // to look at yet (a new or untouched app). An imported app shows the trust
+  // notice first, once.
+  const enterApp = async (id: string, opts: EnterOpts = {}) => {
+    const target = await projectStore.get(id);
+    if (projectStore.needsTrustNotice(target)) {
+      setPendingTrust({ project: target!, opts });
+      return;
+    }
     if (id !== activeProjectRef.current) {
       await stopAndWait();
       await projectStore.switchTo(id);
@@ -423,6 +468,15 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
     setAppsOpen(false);
     if (chat) setActiveTab('chat');
     setChatVisible(chat);
+    if (opts.draft !== undefined) setInput(opts.draft);
+  };
+
+  const acceptTrust = async () => {
+    const pending = pendingTrust;
+    if (!pending) return;
+    setPendingTrust(null);
+    await projectStore.acknowledgeImport(pending.project.id);
+    await enterApp(pending.project.id, pending.opts);
   };
 
   if (!ready) {
@@ -434,6 +488,10 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
   }
 
   const currentProject = projects.find((p) => p.id === currentId) ?? null;
+  // Belt and braces for the trust notice: an imported app that hasn't been
+  // accepted never runs, even if it became current some other way (e.g. the
+  // app before it in the list was deleted).
+  const canRun = appOpened && !!currentProject && !projectStore.needsTrustNotice(currentProject);
   const canSend = !!input.trim() && !running;
 
   const chatPanel = (
@@ -448,6 +506,16 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
           <Ionicons name="home-outline" size={20} color={colors.dust} />
         </Pressable>
         <ProjectTitle key={currentProject?.id ?? 'none'} project={currentProject} />
+        {currentProject ? (
+          <Pressable
+            onPress={() => setSharing(currentProject)}
+            style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]}
+            accessibilityRole="button"
+            accessibilityLabel="Share app"
+          >
+            <Ionicons name="share-outline" size={19} color={colors.dust} />
+          </Pressable>
+        ) : null}
         {wide ? (
           <Pressable
             onPress={() => setSidebarOpen(false)}
@@ -592,7 +660,7 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
       {wide && sidebarOpen ? <View style={styles.sidebar}>{chatPanel}</View> : null}
 
       <View style={styles.appLayer}>
-        {appOpened ? (
+        {canRun ? (
           <DynamicView
             revision={renderRevision}
             onError={handleRenderError}
@@ -633,14 +701,24 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
             running={running}
             onStopBuild={stopAndWait}
             onSettings={() => setSettingsVisible(true)}
-            onOpen={(id) => enterApp(id)}
+            onOpen={(id, opts) => enterApp(id, opts)}
             onCreated={(id) => enterApp(id, { chat: true })}
-            onChangeIcon={async (id) => {
-              await enterApp(id, { chat: true });
-              setInput('Make a new app icon for this app');
-            }}
+            onChangeIcon={(id) => enterApp(id, { chat: true, draft: 'Make a new app icon for this app' })}
+            incoming={incoming}
+            onIncomingHandled={clearIncoming}
           />
         </View>
+      ) : null}
+
+      <ShareSheet project={sharing} onClose={() => setSharing(null)} />
+
+      {pendingTrust ? (
+        <TrustNotice
+          project={pendingTrust.project}
+          stopsBuild={running && pendingTrust.project.id !== currentId}
+          onOpen={acceptTrust}
+          onCancel={() => setPendingTrust(null)}
+        />
       ) : null}
 
       {settingsVisible ? (
@@ -739,15 +817,80 @@ function ProjectTitle({ project }: { project: Project | null }) {
       onPress={begin}
       style={({ pressed }) => [styles.title, pressed && styles.pressed]}
       accessibilityRole="button"
-      accessibilityLabel={`${project.name}, rename`}
+      accessibilityLabel={`${project.name}${project.importedFrom ? ', imported' : ''}, rename`}
       accessibilityHint="Double-tap to rename"
     >
-      <AppIcon project={project} size={24} />
+      <View>
+        <AppIcon project={project} size={24} />
+        {project.importedFrom ? <ImportedMark /> : null}
+      </View>
       <Text style={styles.projectTitle} numberOfLines={1}>
         {project.name}
       </Text>
       <Ionicons name="pencil-outline" size={12} color={colors.dust} style={styles.titlePencil} />
     </Pressable>
+  );
+}
+
+// Same arrow badge as the Your apps tile, small enough to keep the title.
+function ImportedMark() {
+  return (
+    <View style={styles.importedMark} pointerEvents="none">
+      <Ionicons name="arrow-down" size={8} color={colors.chalk} />
+    </View>
+  );
+}
+
+// One-time notice before an imported app's code first runs. A plain overlay,
+// not a Modal: it often follows another dialog (stop build, import), and iOS
+// won't present a Modal while another is still dismissing.
+function TrustNotice({
+  project,
+  stopsBuild,
+  onOpen,
+  onCancel,
+}: {
+  project: Project;
+  stopsBuild: boolean;
+  onOpen: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <View style={styles.trustBackdrop}>
+      <View style={styles.trustDialog} accessibilityViewIsModal>
+        <View style={styles.trustHead}>
+          <AppIcon project={project} size={44} />
+          <View style={styles.trustHeadText}>
+            <Text style={styles.trustTitle} numberOfLines={2}>
+              Open {project.name}?
+            </Text>
+            <Text style={styles.trustMeta}>Imported app</Text>
+          </View>
+        </View>
+        <Text style={styles.trustBody}>
+          Someone else made this app. Its code runs inside Blank Slate. Its storage is kept separate from
+          your other apps, but that isn't a full security boundary, so only open apps from people you
+          trust.
+          {stopsBuild ? ' The build that is running will be stopped.' : ''}
+        </Text>
+        <View style={styles.trustActions}>
+          <Pressable
+            style={({ pressed }) => [styles.trustBtn, styles.trustBtnSecondary, pressed && styles.pressed]}
+            onPress={onCancel}
+            accessibilityRole="button"
+          >
+            <Text style={styles.trustBtnSecondaryText}>Cancel</Text>
+          </Pressable>
+          <Pressable
+            style={({ pressed }) => [styles.trustBtn, styles.trustBtnPrimary, pressed && styles.pressed]}
+            onPress={onOpen}
+            accessibilityRole="button"
+          >
+            <Text style={styles.trustBtnPrimaryText}>Open</Text>
+          </Pressable>
+        </View>
+      </View>
+    </View>
   );
 }
 
@@ -880,6 +1023,55 @@ const styles = StyleSheet.create({
     color: colors.chalk,
   },
   titlePencil: { marginLeft: -2, opacity: 0.8 },
+  importedMark: {
+    position: 'absolute',
+    right: -5,
+    bottom: -5,
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    borderWidth: 1.5,
+    borderColor: colors.slate,
+    backgroundColor: colors.lineStrong,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  trustBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(10,10,12,0.72)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 24,
+  },
+  trustDialog: {
+    width: '100%',
+    maxWidth: 380,
+    padding: 20,
+    gap: 14,
+    borderRadius: radii.card,
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.board,
+  },
+  trustHead: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  trustHeadText: { flex: 1, minWidth: 0, gap: 2 },
+  trustTitle: { fontFamily: fonts.displaySemi, fontSize: 20, color: colors.chalk },
+  trustMeta: { fontFamily: fonts.body, fontSize: 12, color: colors.dust },
+  trustBody: { fontFamily: fonts.body, fontSize: 14, lineHeight: 21, color: colors.chalkMuted },
+  trustActions: { flexDirection: 'row', gap: 10, marginTop: 4 },
+  trustBtn: {
+    flex: 1,
+    height: 48,
+    borderRadius: radii.button,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  trustBtnPrimary: { backgroundColor: colors.accent, borderColor: colors.accent },
+  trustBtnPrimaryText: { fontFamily: fonts.bodySemi, fontSize: 15, color: colors.slate },
+  trustBtnSecondary: { backgroundColor: colors.board, borderColor: colors.lineStrong },
+  trustBtnSecondaryText: { fontFamily: fonts.bodyMedium, fontSize: 15, color: colors.chalk },
   titleInput: {
     flex: 1,
     height: 36,

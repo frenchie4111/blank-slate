@@ -24,7 +24,36 @@
         "NSPhotoLibraryUsageDescription": "Blank Slate lets you pick photos when an app you build asks for one.",
         "NSPhotoLibraryAddUsageDescription": "Blank Slate can save photos when an app you build generates one.",
         "NSMicrophoneUsageDescription": "Blank Slate uses the microphone if an app you build records audio.",
-        "NSLocationWhenInUseUsageDescription": "Blank Slate uses your location if an app you build needs it (e.g. weather, check-ins)."
+        "NSLocationWhenInUseUsageDescription": "Blank Slate uses your location if an app you build needs it (e.g. weather, check-ins).",
+        "LSSupportsOpeningDocumentsInPlace": false,
+        "CFBundleDocumentTypes": [
+          {
+            "CFBundleTypeName": "Blank Slate App",
+            "CFBundleTypeRole": "Viewer",
+            "LSHandlerRank": "Owner",
+            "LSItemContentTypes": [
+              "org.mikelyons.blank-slate.app"
+            ]
+          }
+        ],
+        "UTExportedTypeDeclarations": [
+          {
+            "UTTypeIdentifier": "org.mikelyons.blank-slate.app",
+            "UTTypeDescription": "Blank Slate App",
+            "UTTypeConformsTo": [
+              "public.data",
+              "public.content"
+            ],
+            "UTTypeTagSpecification": {
+              "public.filename-extension": [
+                "blankslate"
+              ],
+              "public.mime-type": [
+                "application/x-blankslate"
+              ]
+            }
+          }
+        ]
       }
     },
     "android": {
@@ -55,7 +84,13 @@
       "expo-video",
       "expo-notifications",
       "expo-location",
-      "expo-updates"
+      "expo-updates",
+      [
+        "expo-sensors",
+        {
+          "motionPermission": "Blank Slate uses motion data if an app you build counts steps or reads motion sensors."
+        }
+      ]
     ],
     "runtimeVersion": {
       "policy": "appVersion"
