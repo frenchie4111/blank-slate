@@ -14,7 +14,31 @@ export type Project = {
   // appearanceOf() defaults.
   tint?: Tint;
   glyph?: Glyph;
+  // The user picked this name (create sheet or a rename in the UI), so the
+  // agent's set_app_name must leave it alone. Missing on older projects: read
+  // it with isNameSetByUser().
+  nameSetByUser?: boolean;
 };
+
+export const MAX_NAME_LENGTH = 40;
+
+// Placeholder names nobody chose on purpose: "First app", "New app",
+// "Untitled 3", "App 2", "My app".
+const GENERIC_NAME = /^(first app|new app|my app|untitled|app)( \d+)?$/i;
+
+export function isGenericName(name: string): boolean {
+  return GENERIC_NAME.test(name.trim());
+}
+
+// Older projects have no flag: treat a generic name as unset and anything
+// else as the user's own.
+export function isNameSetByUser(p: Project): boolean {
+  return p.nameSetByUser ?? !isGenericName(p.name);
+}
+
+export function cleanName(rawName: string): string {
+  return rawName.trim().replace(/\s+/g, ' ').slice(0, MAX_NAME_LENGTH).trim();
+}
 
 export type ProjectAppearance = { tint?: Tint; glyph?: Glyph };
 
@@ -225,13 +249,15 @@ export async function create(
   const projects = await loadProjects();
   const id = newId();
   const now = Date.now();
-  const name = rawName.trim() || `Untitled ${projects.length + 1}`;
+  const typed = cleanName(rawName);
+  const name = typed || `Untitled ${projects.length + 1}`;
   await writeProjectFile(id, 'App.tsx', STARTER_APP);
   const project: Project = {
     id,
     name,
     createdAt: now,
     updatedAt: now,
+    nameSetByUser: !!typed && !isGenericName(typed),
     tint: appearance.tint ?? defaultTint(id),
     ...(appearance.glyph ? { glyph: appearance.glyph } : {}),
   };
@@ -248,14 +274,20 @@ export async function switchTo(id: string): Promise<void> {
   emit();
 }
 
-export async function rename(id: string, rawName: string): Promise<void> {
-  const name = rawName.trim();
+// by: 'user' for renames from the UI (locks the name against the agent),
+// 'agent' for set_app_name.
+export async function rename(
+  id: string,
+  rawName: string,
+  by: 'user' | 'agent' = 'user',
+): Promise<void> {
+  const name = cleanName(rawName);
   if (!name) return;
   const projects = await loadProjects();
   const idx = projects.findIndex((p) => p.id === id);
   if (idx < 0) throw new Error(`project ${id} not found`);
   const next = projects.slice();
-  next[idx] = { ...next[idx], name, updatedAt: Date.now() };
+  next[idx] = { ...next[idx], name, nameSetByUser: by === 'user', updatedAt: Date.now() };
   await saveProjects(next);
   emit();
 }

@@ -266,6 +266,19 @@ function describe(e: ToolLike, known: Map<string, number>): ToolStep {
         resultText,
         detail: failed ?? (ok ? path : null),
       };
+    case 'set_app_name': {
+      const name = typeof e.input.name === 'string' ? e.input.name.trim() : '';
+      return {
+        ...base,
+        key: 'other',
+        icon: 'pricetag-outline',
+        label: ok ? `Named app '${name}'` : 'Name app',
+        doing: `Naming app '${name}'`,
+        status,
+        resultText,
+        detail: status === 'error' ? 'kept name' : null,
+      };
+    }
     case 'get_app_history': {
       const n = ok ? countEventLines(resultText) : 0;
       return {

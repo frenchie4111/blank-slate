@@ -1,4 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
+import * as Haptics from 'expo-haptics';
 import React from 'react';
 import {
   ActivityIndicator,
@@ -41,6 +42,8 @@ type Props = {
   onOpen: (id: string) => void;
   // A freshly created project: switch to it and start chatting.
   onCreated: (id: string) => void;
+  // Opens the project's chat with an icon request typed but not sent.
+  onChangeIcon: (id: string) => void;
 };
 
 type Draft = { mode: 'create' } | { mode: 'edit'; project: Project };
@@ -53,6 +56,7 @@ export function YourAppsScreen({
   onSettings,
   onOpen,
   onCreated,
+  onChangeIcon,
 }: Props) {
   const insets = useSafeAreaInsets();
   const [editing, setEditing] = React.useState(false);
@@ -61,6 +65,8 @@ export function YourAppsScreen({
   const [busy, setBusy] = React.useState(false);
   // Leaving the current app mid-build asks first, then stops the build.
   const [pendingStop, setPendingStop] = React.useState<(() => void) | null>(null);
+  // Long-pressed tile: its context menu is open.
+  const [menuFor, setMenuFor] = React.useState<Project | null>(null);
 
   const current = projects.find((p) => p.id === currentId) ?? null;
   const canDelete = projects.length > 1;
@@ -88,6 +94,24 @@ export function YourAppsScreen({
     if (editing) setDraft({ mode: 'edit', project: p });
     else if (p.id === currentId) onOpen(p.id);
     else afterStop(() => onOpen(p.id));
+  };
+
+  const openMenu = (p: Project) => {
+    if (busy || editing) return;
+    if (Platform.OS !== 'web') {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    }
+    setMenuFor(p);
+  };
+
+  const menuAction = (action: 'rename' | 'icon' | 'delete') => {
+    const p = menuFor;
+    setMenuFor(null);
+    if (!p) return;
+    if (action === 'rename') setDraft({ mode: 'edit', project: p });
+    else if (action === 'delete') setPendingDelete(p);
+    else if (p.id === currentId) onChangeIcon(p.id);
+    else afterStop(() => onChangeIcon(p.id));
   };
 
   const deletingCurrentBuild = running && pendingDelete?.id === currentId;
@@ -145,6 +169,17 @@ export function YourAppsScreen({
               <View style={editing && styles.tilted}>
                 <Pressable
                   onPress={() => handleTile(p)}
+                  onLongPress={() => openMenu(p)}
+                  delayLongPress={400}
+                  // Right-click opens the same menu on web and desktop.
+                  {...(Platform.OS === 'web'
+                    ? ({
+                        onContextMenu: (e: { preventDefault: () => void }) => {
+                          e.preventDefault();
+                          openMenu(p);
+                        },
+                      } as object)
+                    : null)}
                   style={({ pressed }) => [
                     styles.tile,
                     isCurrent ? styles.tileCurrent : null,
@@ -208,6 +243,15 @@ export function YourAppsScreen({
             </Pressable>
           </View>
         </View>
+      ) : null}
+
+      {menuFor ? (
+        <TileMenu
+          project={menuFor}
+          canDelete={canDelete}
+          onClose={() => setMenuFor(null)}
+          onAction={menuAction}
+        />
       ) : null}
 
       <AppSheet
@@ -303,6 +347,85 @@ export function YourAppsScreen({
         </View>
       </Modal>
     </View>
+  );
+}
+
+// iOS-style context menu for a long-pressed tile. A plain overlay rather than
+// a Modal: Rename and Delete open Modals of their own, and iOS won't present
+// one while another is still dismissing.
+function TileMenu({
+  project,
+  canDelete,
+  onClose,
+  onAction,
+}: {
+  project: Project;
+  canDelete: boolean;
+  onClose: () => void;
+  onAction: (action: 'rename' | 'icon' | 'delete') => void;
+}) {
+  return (
+    <View style={styles.menuBackdrop}>
+      <Pressable
+        style={StyleSheet.absoluteFill}
+        onPress={onClose}
+        accessibilityRole="button"
+        accessibilityLabel="Close menu"
+      />
+      <View style={styles.menuHead} pointerEvents="none">
+        <AppIcon project={project} size={84} />
+        <Text style={styles.menuName} numberOfLines={1}>
+          {project.name}
+        </Text>
+      </View>
+      <View style={styles.menu} accessibilityRole="menu">
+        <MenuRow icon="pencil-outline" label="Rename" onPress={() => onAction('rename')} />
+        <MenuRow icon="image-outline" label="Change icon" onPress={() => onAction('icon')} />
+        <MenuRow
+          icon="trash-outline"
+          label="Delete"
+          danger
+          disabled={!canDelete}
+          onPress={() => onAction('delete')}
+          last
+        />
+      </View>
+    </View>
+  );
+}
+
+function MenuRow({
+  icon,
+  label,
+  onPress,
+  danger,
+  disabled,
+  last,
+}: {
+  icon: React.ComponentProps<typeof Ionicons>['name'];
+  label: string;
+  onPress: () => void;
+  danger?: boolean;
+  disabled?: boolean;
+  last?: boolean;
+}) {
+  const color = disabled ? colors.dust : danger ? colors.danger : colors.chalk;
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={disabled}
+      style={({ pressed }) => [
+        styles.menuRow,
+        !last && styles.menuRowDivider,
+        pressed && styles.menuRowPressed,
+        disabled && styles.menuRowDisabled,
+      ]}
+      accessibilityRole="menuitem"
+      accessibilityState={{ disabled }}
+    >
+      <Text style={[styles.menuLabel, { color }]}>{label}</Text>
+      <Ionicons name={icon} size={18} color={color} />
+    </Pressable>
   );
 }
 
@@ -619,6 +742,37 @@ const styles = StyleSheet.create({
   btnSecondaryText: { fontFamily: fonts.bodyMedium, fontSize: 15, color: colors.chalk },
   btnDanger: { backgroundColor: colors.dangerBg, borderColor: colors.dangerBorder },
   btnDangerText: { fontFamily: fonts.bodyMedium, fontSize: 15, color: colors.danger },
+
+  menuBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(10,10,12,0.72)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 16,
+    paddingHorizontal: 24,
+  },
+  menuHead: { alignItems: 'center', gap: 10, maxWidth: 260 },
+  menuName: { fontFamily: fonts.bodySemi, fontSize: 15, color: colors.chalk },
+  menu: {
+    width: 250,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.raised,
+    overflow: 'hidden',
+    boxShadow: '0 12px 32px rgba(0, 0, 0, 0.5)',
+  },
+  menuRow: {
+    height: 48,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+  },
+  menuRowDivider: { borderBottomWidth: 1, borderBottomColor: colors.line },
+  menuRowPressed: { backgroundColor: colors.lineStrong },
+  menuRowDisabled: { opacity: 0.5 },
+  menuLabel: { fontFamily: fonts.body, fontSize: 15 },
 
   sheetBackdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(10,10,12,0.72)' },
   sheet: {

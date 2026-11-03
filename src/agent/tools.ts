@@ -1,4 +1,12 @@
-import { getCurrentProjectIdSync, setIcon } from '../project/store';
+import {
+  cleanName,
+  get as getProject,
+  getCurrentProjectIdSync,
+  isNameSetByUser,
+  MAX_NAME_LENGTH,
+  rename,
+  setIcon,
+} from '../project/store';
 import { deleteFile, isImagePath, listFiles, normalizePath, readFile, writeFile } from '../vfs/vfs';
 import { DEBUG_FUNCTION_TOOLS, DEBUG_TOOL_NAMES, executeDebugTool } from './debugTools';
 import { IMAGE_MODEL } from './models';
@@ -99,6 +107,17 @@ const FUNCTION_TOOLS: FunctionTool[] = [
     },
   },
   {
+    name: 'set_app_name',
+    description: `Set this app's name in Blank Slate's project list and header. Short and friendly: 1-3 words, Title Case, at most ${MAX_NAME_LENGTH} characters, matching what the app shows. Fails if the user named the app themselves.`,
+    parameters: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'e.g. "Memory Journal"' },
+      },
+      required: ['name'],
+    },
+  },
+  {
     name: 'list_files',
     description: 'List every path currently in the virtual filesystem.',
     parameters: { type: 'object', properties: {} },
@@ -176,6 +195,25 @@ export async function executeTool(
         }
         await setIcon(getCurrentProjectIdSync(), path);
         return { ok: true, text: `App icon set to ${path}.` };
+      }
+      case 'set_app_name': {
+        const name = cleanName(requireString(input, 'name'));
+        if (!name) return { ok: false, text: 'name is empty.' };
+        const id = getCurrentProjectIdSync();
+        const project = await getProject(id);
+        if (!project) return { ok: false, text: 'No current app.' };
+        // Absolute, even if the user seems to ask: the model can't reliably
+        // tell "rename it" from "rebuild it", and the user can always rename
+        // from the header.
+        if (isNameSetByUser(project)) {
+          return {
+            ok: false,
+            text: `The user named this app "${project.name}" themselves, so it stays. Don't call set_app_name again. If they asked for a new name, tell them to tap the name at the top of the chat to rename it.`,
+          };
+        }
+        if (project.name === name) return { ok: true, text: `App is already named "${name}".` };
+        await rename(id, name, 'agent');
+        return { ok: true, text: `App renamed to "${name}".` };
       }
       case 'write_file': {
         const path = requireString(input, 'path');

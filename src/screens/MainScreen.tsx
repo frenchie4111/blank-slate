@@ -442,12 +442,7 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
               >
                 <Ionicons name="home-outline" size={20} color={colors.dust} />
               </Pressable>
-              <View style={styles.title} accessibilityRole="header">
-                {currentProject ? <AppIcon project={currentProject} size={24} /> : null}
-                <Text style={styles.projectTitle} numberOfLines={1}>
-                  {currentProject?.name ?? 'Blank Slate'}
-                </Text>
-              </View>
+              <ProjectTitle key={currentProject?.id ?? 'none'} project={currentProject} />
               <Pressable
                 onPress={showApp}
                 style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]}
@@ -583,6 +578,10 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
             onSettings={() => setSettingsVisible(true)}
             onOpen={(id) => enterApp(id)}
             onCreated={(id) => enterApp(id, { chat: true })}
+            onChangeIcon={async (id) => {
+              await enterApp(id, { chat: true });
+              setInput('Make a new app icon for this app');
+            }}
           />
         </View>
       ) : null}
@@ -600,6 +599,98 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
         </View>
       ) : null}
     </View>
+  );
+}
+
+// The chat header's centred title. Tap it to rename the app inline: Enter or
+// blur saves, Escape (web) or an empty name cancels.
+function ProjectTitle({ project }: { project: Project | null }) {
+  const [editing, setEditing] = React.useState(false);
+  const [draft, setDraft] = React.useState('');
+  // Enter saves and then blurs; Escape cancels and then blurs. Either way the
+  // blur that follows must not save again.
+  const settledRef = React.useRef(false);
+  const inputRef = React.useRef<TextInput | null>(null);
+
+  // selectTextOnFocus covers native, but on web the tap that opened the field
+  // lands after focus and clears the selection, so select once it settles.
+  React.useEffect(() => {
+    if (!editing || Platform.OS !== 'web') return;
+    const t = setTimeout(() => {
+      (inputRef.current as unknown as HTMLInputElement | null)?.select?.();
+    }, 0);
+    return () => clearTimeout(t);
+  }, [editing]);
+
+  if (!project) {
+    return (
+      <View style={styles.title} accessibilityRole="header">
+        <Text style={styles.projectTitle} numberOfLines={1}>
+          Blank Slate
+        </Text>
+      </View>
+    );
+  }
+
+  const begin = () => {
+    settledRef.current = false;
+    setDraft(project.name);
+    setEditing(true);
+  };
+
+  const finish = (save: boolean) => {
+    if (settledRef.current) return;
+    settledRef.current = true;
+    setEditing(false);
+    const name = projectStore.cleanName(draft);
+    if (save && name && name !== project.name) {
+      projectStore.rename(project.id, name).catch(() => {});
+    }
+  };
+
+  if (editing) {
+    return (
+      <View style={styles.title}>
+        <AppIcon project={project} size={24} />
+        <TextInput
+          ref={inputRef}
+          value={draft}
+          onChangeText={setDraft}
+          autoFocus
+          selectTextOnFocus
+          maxLength={projectStore.MAX_NAME_LENGTH}
+          returnKeyType="done"
+          autoCapitalize="words"
+          autoCorrect={false}
+          onSubmitEditing={() => finish(true)}
+          onBlur={() => finish(true)}
+          onKeyPress={(e) => {
+            if (e.nativeEvent.key === 'Escape') {
+              finish(false);
+              inputRef.current?.blur();
+            }
+          }}
+          style={[styles.projectTitle, styles.titleInput]}
+          accessibilityLabel="App name"
+        />
+      </View>
+    );
+  }
+
+  return (
+    <Pressable
+      onPress={begin}
+      style={({ pressed }) => [styles.title, pressed && styles.pressed]}
+      accessibilityRole="button"
+      accessibilityLabel={`${project.name}, rename`}
+      accessibilityHint="Double-tap to rename"
+    >
+      <AppIcon project={project} size={24} />
+      <Text style={styles.projectTitle} numberOfLines={1}>
+        {project.name}
+      </Text>
+      <Ionicons name="pencil-outline" size={12} color={colors.dust} style={styles.titlePencil} />
+    </Pressable>
   );
 }
 
@@ -830,6 +921,17 @@ const styles = StyleSheet.create({
     fontSize: 19,
     letterSpacing: -0.2,
     color: colors.chalk,
+  },
+  titlePencil: { marginLeft: -2, opacity: 0.8 },
+  titleInput: {
+    flex: 1,
+    height: 36,
+    paddingVertical: 0,
+    paddingHorizontal: 0,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.accent,
+    // RN Web draws a focus ring; the underline already shows it's editable.
+    ...(Platform.OS === 'web' ? ({ outlineStyle: 'none' } as object) : null),
   },
   iconBtn: {
     width: 44,

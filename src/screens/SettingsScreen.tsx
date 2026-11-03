@@ -8,13 +8,13 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
-  Switch,
   Text,
   TextInput,
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MODEL_OPTIONS } from '../agent/models';
+import { SettingSwitch } from '../components/SettingSwitch';
 import { getAutoAppIcons, getModel, setAutoAppIcons, setModel } from '../storage/keyStore';
 import { colors, fonts, radii, type } from '../theme';
 
@@ -199,7 +199,7 @@ export function SettingsScreen({ onBack, onResetKey, apiKey }: Props) {
         <Section title="Icons">
           <View style={styles.row}>
             <Text style={styles.rowLabel}>Auto-generate app icons</Text>
-            <Switch
+            <SettingSwitch
               value={autoIcons ?? true}
               onValueChange={toggleAutoIcons}
               disabled={autoIcons === null}
