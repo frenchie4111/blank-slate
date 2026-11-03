@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Your apps</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&amp;family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap">
+<style>
+body{margin:0}
+a{color:#E8C547}a:hover{color:#F3D976}
+</style>
+</helmet>
+<div style="width: 390px; height: 844px; box-sizing: border-box; padding: 54px 20px 34px; background: #121316; color: #EDEBE6; font-family: Inter, system-ui, sans-serif; display: flex; flex-direction: column; gap: 24px">
+
+  <header style="display: flex; align-items: center; justify-content: space-between; gap: 12px">
+    <div style="display: flex; flex-direction: column; gap: 2px">
+      <h1 style="margin: 0; font-family: 'Space Grotesk', sans-serif; font-size: 30px; font-weight: 700; letter-spacing: -0.01em">Your apps</h1>
+      <span style="font-size: 13px; color: #A3A39C">{{ countLabel }}</span>
+    </div>
+    <button type="button" onClick="{{ toggleEdit }}" style="height: 40px; padding: 0 16px; border-radius: 12px; border: 1px solid #3A3B42; background: {{ editBg }}; color: {{ editFg }}; font-family: Inter, sans-serif; font-size: 14px; font-weight: 600">{{ editLabel }}</button>
+  </header>
+
+  <div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); row-gap: 24px; column-gap: 14px">
+    <sc-for list="{{ apps }}" as="app" hint-placeholder-count="8">
+      <div style="position: relative; display: flex; flex-direction: column; align-items: center; gap: 8px">
+        <button type="button" aria-label="Open {{ app.name }}" style="width: 72px; height: 72px; border-radius: 20px; border: {{ app.ring }}; background: {{ app.bg }}; display: flex; align-items: center; justify-content: center; padding: 0; box-sizing: border-box; {{ app.tilt }}">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="{{ app.fg }}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{ app.d1 }}"></path><path d="{{ app.d2 }}"></path></svg>
+        </button>
+        <span style="max-width: 80px; font-size: 12px; line-height: 1.25; text-align: center; color: #D6D4CE; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{ app.name }}</span>
+        <sc-if value="{{ app.current }}" hint-placeholder-val="{{ false }}">
+          <span style="position: absolute; top: 86px; width: 5px; height: 5px; border-radius: 3px; background: #E8C547; margin-top: 30px"></span>
+        </sc-if>
+        <sc-if value="{{ editing }}" hint-placeholder-val="{{ false }}">
+          <button type="button" aria-label="Delete {{ app.name }}" onClick="{{ app.remove }}" style="position: absolute; top: -8px; left: -2px; width: 26px; height: 26px; border-radius: 13px; border: 2px solid #121316; background: #3A3B42; display: flex; align-items: center; justify-content: center; padding: 0">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#EDEBE6" stroke-width="3" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12"></path><path d="M18 6 6 18"></path></svg>
+          </button>
+        </sc-if>
+      </div>
+    </sc-for>
+
+    <div style="display: flex; flex-direction: column; align-items: center; gap: 8px">
+      <button type="button" aria-label="New app" style="width: 72px; height: 72px; border-radius: 20px; border: 1.5px dashed #4A4B53; background: transparent; display: flex; align-items: center; justify-content: center; padding: 0">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#E8C547" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14"></path><path d="M5 12h14"></path></svg>
+      </button>
+      <span style="font-size: 12px; color: #A3A39C">New app</span>
+    </div>
+  </div>
+
+  <div style="flex-grow: 1"></div>
+
+  <div style="display: flex; align-items: center; gap: 12px; padding: 10px 10px 10px 12px; border-radius: 22px; background: #1C1D21; border: 1px solid #2E2F35">
+    <div style="width: 44px; height: 44px; flex-shrink: 0; border-radius: 13px; background: #2B2A20; display: flex; align-items: center; justify-content: center">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#E8C547" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path><path d="M4 21h16"></path></svg>
+    </div>
+    <div style="flex-grow: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px">
+      <span style="font-size: 14px; font-weight: 600">Habit tracker</span>
+      <span style="font-size: 12px; color: #A3A39C">Open now · edited 2 min ago</span>
+    </div>
+    <button type="button" style="height: 40px; padding: 0 16px; border-radius: 12px; border: none; background: #E8C547; color: #121316; font-family: Inter, sans-serif; font-size: 14px; font-weight: 600">Resume</button>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+renderVals() {
+const st = this.state || {};
+const editing = !!st.editing;
+const removed = st.removed || {};
+const base = [
+  { id: 'habit', name: 'Habit tracker', bg: '#2B2A20', fg: '#E8C547', d1: 'M20 6 9 17l-5-5', d2: 'M4 21h16', current: true },
+  { id: 'plant', name: 'Plant watering', bg: '#1F2A24', fg: '#8FD1A0', d1: 'M12 21c-4 0-7-3-7-7 0-5 7-11 7-11s7 6 7 11c0 4-3 7-7 7Z', d2: 'M12 21v-6' },
+  { id: 'tip', name: 'Tip calculator', bg: '#1E2633', fg: '#8DB8F0', d1: 'M5 3h14v18H5Z', d2: 'M9 7h6M9 12h1M14 12h1M9 16h1M14 16h1' },
+  { id: 'workout', name: 'Workout log', bg: '#2E2120', fg: '#F08A6B', d1: 'M6 8v8M18 8v8M3 10v4M21 10v4', d2: 'M6 12h12' },
+  { id: 'grocery', name: 'Groceries', bg: '#24282B', fg: '#D6D4CE', d1: 'M4 5h2l2 11h10l2-8H7', d2: 'M9 20h.01M17 20h.01' },
+  { id: 'mood', name: 'Mood journal', bg: '#2A2233', fg: '#C3A6F0', d1: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Z', d2: 'M8 14s1.5 2 4 2 4-2 4-2M9 9h.01M15 9h.01' },
+  { id: 'focus', name: 'Focus timer', bg: '#2E2120', fg: '#F08A6B', d1: 'M12 21a8 8 0 1 0 0-16 8 8 0 0 0 0 16Z', d2: 'M12 9v4l2 2M10 2h4' },
+  { id: 'cards', name: 'Flashcards', bg: '#1E2633', fg: '#8DB8F0', d1: 'M7 4h13v13H7Z', d2: 'M4 7v13h13' }
+];
+const apps = base.filter((a) => !removed[a.id]).map((a) => ({
+  ...a,
+  current: !!a.current,
+  ring: a.current ? '2px solid #E8C547' : '1px solid #2E2F35',
+  tilt: editing ? 'transform: rotate(-2deg)' : '',
+  remove: () => this.setState({ removed: { ...removed, [a.id]: true } })
+}));
+return {
+  apps,
+  editing,
+  countLabel: apps.length + ' apps on this phone',
+  editLabel: editing ? 'Done' : 'Edit',
+  editBg: editing ? '#E8C547' : '#1C1D21',
+  editFg: editing ? '#121316' : '#EDEBE6',
+  toggleEdit: () => this.setState({ editing: !editing })
+};
+}
+}
+</script>
+</body>
+</html>

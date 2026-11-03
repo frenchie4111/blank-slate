@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Onboarding</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&amp;family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap">
+<style>
+body{margin:0}
+a{color:#E8C547}a:hover{color:#F3D976}
+</style>
+</helmet>
+<div style="width: 390px; height: 844px; box-sizing: border-box; padding: 96px 24px 40px; background: #121316; color: #EDEBE6; font-family: Inter, system-ui, sans-serif; display: flex; flex-direction: column; gap: 40px">
+
+  <div style="display: flex; flex-direction: column; gap: 20px">
+    <div style="width: 64px; height: 64px; border-radius: 20px; background: #1C1D21; border: 1px solid #3A3B42; display: flex; align-items: center; justify-content: center">
+      <div style="width: 30px; height: 30px; border-radius: 8px; border: 2.5px solid #EDEBE6; display: flex; align-items: flex-end; justify-content: flex-end; padding: 4px; box-sizing: border-box"><div style="width: 10px; height: 3px; border-radius: 2px; background: #E8C547"></div></div>
+    </div>
+    <h1 style="margin: 0; font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 40px; line-height: 1.05; letter-spacing: -0.02em">Build any app,<br>right here.</h1>
+    <p style="margin: 0; font-size: 16px; line-height: 1.5; color: #B9B8B1">Describe what you want. Blank Slate writes the code on your phone and runs it the moment it's ready.</p>
+  </div>
+
+  <div style="display: flex; flex-direction: column; gap: 10px">
+    <label for="key" style="font-size: 14px; font-weight: 600">OpenRouter API key</label>
+    <input id="key" type="password" placeholder="sk-or-…" style="height: 52px; box-sizing: border-box; padding: 0 16px; border-radius: 14px; border: 1px solid #3A3B42; background: #1C1D21; color: #EDEBE6; font-family: 'JetBrains Mono', monospace; font-size: 14px">
+    <span style="font-size: 13px; line-height: 1.5; color: #A3A39C">Stored only on this device, in the secure keychain. <a href="https://openrouter.ai/keys">Get a key</a></span>
+  </div>
+
+  <div style="flex-grow: 1"></div>
+
+  <button type="button" style="height: 54px; border-radius: 14px; border: none; background: #E8C547; color: #121316; font-family: Inter, sans-serif; font-size: 16px; font-weight: 600">Save key and continue</button>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

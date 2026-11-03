@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Settings</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&amp;family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap">
+<style>
+body{margin:0}
+a{color:#E8C547}a:hover{color:#F3D976}
+</style>
+</helmet>
+<div style="width: 390px; height: 844px; box-sizing: border-box; padding: 54px 20px 34px; background: #121316; color: #EDEBE6; font-family: Inter, system-ui, sans-serif; display: flex; flex-direction: column; gap: 24px; overflow: hidden">
+
+  <header style="display: flex; align-items: center; gap: 8px; margin-left: -8px">
+    <button type="button" aria-label="Back" style="width: 44px; height: 44px; border: none; border-radius: 14px; background: transparent; display: flex; align-items: center; justify-content: center; padding: 0">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#EDEBE6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6"></path></svg>
+    </button>
+    <h1 style="margin: 0; font-family: 'Space Grotesk', sans-serif; font-size: 28px; font-weight: 700; letter-spacing: -0.01em">Settings</h1>
+  </header>
+
+  <section style="display: flex; flex-direction: column; gap: 10px">
+    <h2 style="margin: 0; font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 500; letter-spacing: 0.12em; text-transform: uppercase; color: #A3A39C">Model</h2>
+    <div style="display: flex; flex-direction: column; border-radius: 20px; background: #1C1D21; border: 1px solid #2E2F35; overflow: hidden">
+      <button type="button" style="min-height: 60px; display: flex; align-items: center; gap: 12px; padding: 10px 16px; border: none; border-bottom: 1px solid #2E2F35; background: transparent; color: #EDEBE6; text-align: left">
+        <span style="width: 20px; height: 20px; flex-shrink: 0; box-sizing: border-box; border-radius: 10px; border: 6px solid #E8C547"></span>
+        <span style="flex-grow: 1; display: flex; flex-direction: column; gap: 2px"><span style="font-family: Inter, sans-serif; font-size: 15px; font-weight: 600">Claude Opus 5.5</span><span style="font-family: Inter, sans-serif; font-size: 12px; color: #A3A39C">Best results, slower</span></span>
+      </button>
+      <button type="button" style="min-height: 60px; display: flex; align-items: center; gap: 12px; padding: 10px 16px; border: none; border-bottom: 1px solid #2E2F35; background: transparent; color: #EDEBE6; text-align: left">
+        <span style="width: 20px; height: 20px; flex-shrink: 0; box-sizing: border-box; border-radius: 10px; border: 2px solid #4A4B53"></span>
+        <span style="flex-grow: 1; display: flex; flex-direction: column; gap: 2px"><span style="font-family: Inter, sans-serif; font-size: 15px; font-weight: 500">Claude Sonnet 5.5</span><span style="font-family: Inter, sans-serif; font-size: 12px; color: #A3A39C">Fast and capable</span></span>
+      </button>
+      <div style="display: flex; align-items: center; gap: 8px; padding: 10px 10px 10px 16px">
+        <label for="custom" style="position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0)">Custom model ID</label>
+        <input id="custom" placeholder="Custom OpenRouter model ID" style="flex-grow: 1; min-width: 0; height: 44px; box-sizing: border-box; padding: 0 12px; border-radius: 12px; border: 1px solid #3A3B42; background: #121316; color: #EDEBE6; font-family: 'JetBrains Mono', monospace; font-size: 12px">
+        <button type="button" style="height: 44px; padding: 0 16px; border-radius: 12px; border: 1px solid #3A3B42; background: #26272C; color: #EDEBE6; font-family: Inter, sans-serif; font-size: 14px; font-weight: 500">Use</button>
+      </div>
+    </div>
+  </section>
+
+  <section style="display: flex; flex-direction: column; gap: 10px">
+    <h2 style="margin: 0; font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 500; letter-spacing: 0.12em; text-transform: uppercase; color: #A3A39C">App</h2>
+    <div style="display: flex; flex-direction: column; border-radius: 20px; background: #1C1D21; border: 1px solid #2E2F35; overflow: hidden">
+      <div style="min-height: 48px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 16px; border-bottom: 1px solid #2E2F35"><span style="font-size: 14px">Version</span><span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #B9B8B1">1.0.0 (build 14)</span></div>
+      <div style="min-height: 48px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 16px; border-bottom: 1px solid #2E2F35"><span style="font-size: 14px">Channel</span><span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #B9B8B1">preview</span></div>
+      <div style="min-height: 48px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 16px; border-bottom: 1px solid #2E2F35"><span style="font-size: 14px">Update</span><span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #B9B8B1">[UPDATE ID]</span></div>
+      <div style="display: flex; align-items: center; gap: 10px; padding: 12px 16px">
+        <span style="width: 8px; height: 8px; border-radius: 4px; background: #8FD1A0"></span>
+        <span style="flex-grow: 1; font-size: 13px; color: #A3A39C">You're on the latest update</span>
+        <button type="button" style="height: 40px; padding: 0 14px; border-radius: 12px; border: 1px solid #3A3B42; background: #26272C; color: #EDEBE6; font-family: Inter, sans-serif; font-size: 13px; font-weight: 500">Check now</button>
+      </div>
+    </div>
+  </section>
+
+  <section style="display: flex; flex-direction: column; gap: 10px">
+    <h2 style="margin: 0; font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 500; letter-spacing: 0.12em; text-transform: uppercase; color: #A3A39C">API key</h2>
+    <div style="display: flex; flex-direction: column; border-radius: 20px; background: #1C1D21; border: 1px solid #2E2F35; overflow: hidden">
+      <div style="min-height: 48px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 16px; border-bottom: 1px solid #2E2F35"><span style="font-size: 14px">OpenRouter</span><span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #B9B8B1">sk-or-••••</span></div>
+      <button type="button" style="min-height: 48px; padding: 0 16px; border: none; background: transparent; color: #F08A6B; font-family: Inter, sans-serif; font-size: 14px; font-weight: 500; text-align: left">Reset API key</button>
+    </div>
+  </section>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+renderVals() { return {}; }
+}
+</script>
+</body>
+</html>
