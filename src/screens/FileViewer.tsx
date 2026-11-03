@@ -1,14 +1,15 @@
+import { Ionicons } from '@expo/vector-icons';
 import React from 'react';
 import {
   ActivityIndicator,
   Image,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
+import { colors, fonts, noLigatures, radii, space } from '../theme';
 import * as vfs from '../vfs/vfs';
 
 type Props = {
@@ -75,14 +76,24 @@ export function FilesPanel({ projectId }: Props) {
       <View style={styles.subHeader}>
         <Pressable
           onPress={() => setPickerOpen((v) => !v)}
-          style={[styles.picker, pickerOpen && styles.pickerOpen]}
+          style={({ pressed }) => [styles.picker, (pickerOpen || pressed) && styles.pickerOpen]}
           disabled={files.length === 0}
+          accessibilityRole="button"
+          accessibilityLabel="Choose file"
         >
-          <Text style={styles.pickerIcon}>{selected ? iconForPath(selected) : '·'}</Text>
+          <Ionicons
+            name={selected ? iconForPath(selected) : 'document-outline'}
+            size={15}
+            color={colors.dust}
+          />
           <Text style={styles.pickerText} numberOfLines={1}>
             {selected ?? (files.length === 0 ? 'No files yet' : 'Select a file')}
           </Text>
-          <Text style={styles.pickerChevron}>▾</Text>
+          <Ionicons
+            name={pickerOpen ? 'chevron-up' : 'chevron-down'}
+            size={14}
+            color={colors.dust}
+          />
         </Pressable>
         <Text style={styles.countText}>
           {files.length} file{files.length === 1 ? '' : 's'}
@@ -95,22 +106,19 @@ export function FilesPanel({ projectId }: Props) {
             style={styles.contentScroll}
             contentContainerStyle={styles.contentInner}
           >
-            {loading ? (
+            {loading && content === null ? (
               <View style={styles.loadingRow}>
-                <ActivityIndicator size="small" color="#9ca3af" />
+                <ActivityIndicator size="small" color={colors.dust} />
               </View>
             ) : content?.startsWith('data:image/') ? (
               <Image source={{ uri: content }} style={styles.imagePreview} resizeMode="contain" />
             ) : (
-              <ScrollView horizontal showsHorizontalScrollIndicator>
-                <Text style={styles.code} selectable>
-                  {content ?? ''}
-                </Text>
-              </ScrollView>
+              <CodeView code={content ?? ''} />
             )}
           </ScrollView>
         ) : (
           <View style={styles.emptyWrap}>
+            <Ionicons name="folder-open-outline" size={28} color={colors.lineFaint} />
             <Text style={styles.empty}>
               {files.length === 0
                 ? 'No files yet. Ask the agent in the Chat tab to build something.'
@@ -127,15 +135,19 @@ export function FilesPanel({ projectId }: Props) {
             />
             <View style={styles.dropdown}>
               <ScrollView style={styles.dropdownScroll}>
-                {files.map((path) => {
+                {files.map((path, i) => {
                   const isCurrent = path === selected;
                   return (
                     <Pressable
                       key={path}
                       onPress={() => pick(path)}
-                      style={[styles.dropdownRow, isCurrent && styles.dropdownRowCurrent]}
+                      style={({ pressed }) => [
+                        styles.dropdownRow,
+                        i === files.length - 1 && styles.dropdownRowLast,
+                        (isCurrent || pressed) && styles.dropdownRowCurrent,
+                      ]}
                     >
-                      <Text style={styles.dropdownIcon}>{iconForPath(path)}</Text>
+                      <Ionicons name={iconForPath(path)} size={14} color={colors.dust} />
                       <Text
                         style={[
                           styles.dropdownPath,
@@ -145,6 +157,9 @@ export function FilesPanel({ projectId }: Props) {
                       >
                         {path}
                       </Text>
+                      {isCurrent ? (
+                        <Ionicons name="checkmark" size={14} color={colors.success} />
+                      ) : null}
                     </Pressable>
                   );
                 })}
@@ -157,119 +172,128 @@ export function FilesPanel({ projectId }: Props) {
   );
 }
 
-function iconForPath(path: string): string {
-  if (path.endsWith('.tsx') || path.endsWith('.jsx')) return '⚛︎';
-  if (path.endsWith('.ts') || path.endsWith('.js')) return 'JS';
-  if (path.endsWith('.json')) return '{}';
-  if (path.endsWith('.md')) return 'M';
-  if (vfs.isImagePath(path)) return '🖼';
-  return '•';
+function CodeView({ code }: { code: string }) {
+  const gutter = React.useMemo(() => {
+    const count = code.split('\n').length;
+    return Array.from({ length: count }, (_, i) => String(i + 1)).join('\n');
+  }, [code]);
+  return (
+    <View style={styles.codeRow}>
+      <Text style={styles.gutter}>{gutter}</Text>
+      <ScrollView horizontal showsHorizontalScrollIndicator style={styles.codeScroll}>
+        <Text style={styles.code} selectable>
+          {code}
+        </Text>
+      </ScrollView>
+    </View>
+  );
+}
+
+type IconName = React.ComponentProps<typeof Ionicons>['name'];
+
+function iconForPath(path: string): IconName {
+  if (vfs.isImagePath(path)) return 'image-outline';
+  if (/\.(tsx|jsx|ts|js)$/.test(path)) return 'code-slash-outline';
+  return 'document-text-outline';
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: '#0b0b0f' },
+  root: { flex: 1, backgroundColor: colors.slate },
   subHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: '#1f2937',
-    backgroundColor: '#0b0b0f',
+    gap: 12,
+    paddingHorizontal: space.chatGutter,
+    paddingBottom: 12,
     zIndex: 2,
   },
   picker: {
     flex: 1,
+    height: 44,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    backgroundColor: '#111827',
-    borderRadius: 8,
+    gap: 10,
+    paddingHorizontal: 12,
+    backgroundColor: colors.board,
+    borderRadius: radii.input,
     borderWidth: 1,
-    borderColor: '#1f2937',
+    borderColor: colors.line,
   },
-  pickerOpen: { borderColor: '#374151', backgroundColor: '#1a1f2e' },
-  pickerIcon: {
-    color: '#60a5fa',
-    fontSize: 11,
-    fontWeight: '700',
-    width: 20,
-    textAlign: 'center',
-  },
-  pickerText: {
-    flex: 1,
-    color: '#e5e7eb',
-    fontSize: 13,
-    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-  },
-  pickerChevron: { color: '#9ca3af', fontSize: 12 },
-  countText: { color: '#6b7280', fontSize: 11 },
+  pickerOpen: { borderColor: colors.lineStrong, backgroundColor: colors.raised },
+  pickerText: { flex: 1, fontFamily: fonts.mono, fontSize: 13, color: colors.chalk },
+  countText: { fontFamily: fonts.mono, fontSize: 11, color: colors.dust },
 
   bodyWrap: { flex: 1, position: 'relative' },
-  contentScroll: { flex: 1, backgroundColor: '#0b0b0f' },
-  contentInner: { padding: 14 },
-  imagePreview: { width: '100%', aspectRatio: 1, borderRadius: 8 },
+  contentScroll: { flex: 1 },
+  contentInner: { paddingHorizontal: space.chatGutter, paddingBottom: 24 },
+  imagePreview: { width: '100%', aspectRatio: 1, borderRadius: radii.button },
   loadingRow: { padding: 24, alignItems: 'center' },
-  code: {
-    color: '#e5e7eb',
+  codeRow: {
+    flexDirection: 'row',
+    paddingVertical: 12,
+    borderRadius: radii.button,
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.board,
+  },
+  gutter: {
+    paddingLeft: 12,
+    paddingRight: 10,
+    textAlign: 'right',
+    fontFamily: fonts.mono,
     fontSize: 12,
-    lineHeight: 18,
-    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    lineHeight: 19,
+    color: colors.lineFaint,
+  },
+  codeScroll: { flex: 1 },
+  code: {
+    ...noLigatures,
+    paddingRight: 14,
+    fontFamily: fonts.mono,
+    fontSize: 12,
+    lineHeight: 19,
+    color: colors.chalkSoft,
   },
 
-  emptyWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
+  emptyWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12, padding: 32 },
   empty: {
-    color: '#6b7280',
-    fontSize: 13,
-    fontStyle: 'italic',
+    fontFamily: fonts.body,
+    fontSize: 14,
+    lineHeight: 21,
     textAlign: 'center',
-    lineHeight: 20,
+    color: colors.dust,
   },
 
   dropdown: {
     position: 'absolute',
-    top: 6,
-    left: 14,
-    right: 14,
+    top: 0,
+    left: space.chatGutter,
+    right: space.chatGutter,
     maxHeight: 320,
-    backgroundColor: '#111827',
-    borderRadius: 10,
+    backgroundColor: colors.raised,
+    borderRadius: radii.button,
     borderWidth: 1,
-    borderColor: '#1f2937',
+    borderColor: colors.lineStrong,
     overflow: 'hidden',
     shadowColor: '#000',
-    shadowOpacity: 0.4,
-    shadowRadius: 20,
+    shadowOpacity: 0.45,
+    shadowRadius: 24,
     shadowOffset: { width: 0, height: 8 },
     elevation: 10,
     zIndex: 3,
   },
   dropdownScroll: { maxHeight: 320 },
   dropdownRow: {
+    minHeight: 44,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingHorizontal: 14,
     borderBottomWidth: 1,
-    borderBottomColor: '#1f2937',
+    borderBottomColor: colors.line,
   },
-  dropdownRowCurrent: { backgroundColor: '#1a1f2e' },
-  dropdownIcon: {
-    color: '#60a5fa',
-    fontSize: 11,
-    fontWeight: '700',
-    width: 20,
-    textAlign: 'center',
-  },
-  dropdownPath: {
-    flex: 1,
-    color: '#e5e7eb',
-    fontSize: 13,
-    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-  },
-  dropdownPathCurrent: { color: '#fff', fontWeight: '700' },
+  dropdownRowLast: { borderBottomWidth: 0 },
+  dropdownRowCurrent: { backgroundColor: colors.line },
+  dropdownPath: { flex: 1, fontFamily: fonts.mono, fontSize: 13, color: colors.chalkMuted },
+  dropdownPathCurrent: { color: colors.chalk },
 });

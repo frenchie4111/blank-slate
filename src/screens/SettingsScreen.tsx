@@ -5,7 +5,6 @@ import React from 'react';
 import {
   ActivityIndicator,
   Modal,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -16,10 +15,12 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MODEL_OPTIONS } from '../agent/models';
 import { getModel, setModel } from '../storage/keyStore';
+import { colors, fonts, radii, type } from '../theme';
 
 type Props = {
   onBack: () => void;
   onResetKey: () => void | Promise<void>;
+  apiKey?: string;
 };
 
 type CheckStatus =
@@ -29,7 +30,7 @@ type CheckStatus =
   | { kind: 'available' }
   | { kind: 'error'; message: string };
 
-export function SettingsScreen({ onBack, onResetKey }: Props) {
+export function SettingsScreen({ onBack, onResetKey, apiKey }: Props) {
   const insets = useSafeAreaInsets();
   const {
     currentlyRunning,
@@ -82,6 +83,7 @@ export function SettingsScreen({ onBack, onResetKey }: Props) {
   };
 
   const customIsActive = model !== null && !MODEL_OPTIONS.some((o) => o.id === model);
+  const customInUse = customIsActive && customModel.trim() === model;
 
   const handleConfirmReset = async () => {
     setResetting(true);
@@ -93,149 +95,166 @@ export function SettingsScreen({ onBack, onResetKey }: Props) {
     }
   };
 
-  const appVersion = Application.nativeApplicationVersion ?? '—';
-  const buildNumber = Application.nativeBuildVersion ?? '—';
-  const runtimeVersion = currentlyRunning.runtimeVersion ?? Updates.runtimeVersion ?? '—';
-  const channel = currentlyRunning.channel ?? Updates.channel ?? 'development';
+  // `||`, not `??`: on web and in dev builds these come back as ''.
+  const appVersion = Application.nativeApplicationVersion || '—';
+  const buildNumber = Application.nativeBuildVersion || '—';
+  const runtimeVersion = currentlyRunning.runtimeVersion || Updates.runtimeVersion || '—';
+  const channel = currentlyRunning.channel || Updates.channel || 'development';
   const updateId = currentlyRunning.isEmbeddedLaunch
     ? 'bundled'
-    : (currentlyRunning.updateId ?? 'bundled');
+    : currentlyRunning.updateId || 'bundled';
   const published = currentlyRunning.createdAt ? formatDate(currentlyRunning.createdAt) : '—';
 
-  const applyEnabled = isUpdateAvailable && !isDownloading;
+  const updateReady = isUpdateAvailable || checkStatus.kind === 'available';
+  const status = statusFor(checkStatus, isUpdateAvailable);
 
   return (
     <View style={[styles.root, { paddingTop: insets.top }]}>
       <View style={styles.header}>
-        <Pressable onPress={onBack} hitSlop={12} style={styles.headerBack}>
-          <Ionicons name="chevron-back" size={22} color="#fff" />
-          <Text style={styles.headerBackText}>Back</Text>
+        <Pressable
+          onPress={onBack}
+          hitSlop={4}
+          style={({ pressed }) => [styles.backBtn, pressed && styles.pressed]}
+          accessibilityRole="button"
+          accessibilityLabel="Back"
+        >
+          <Ionicons name="chevron-back" size={22} color={colors.chalk} />
         </Pressable>
         <Text style={styles.headerTitle}>Settings</Text>
-        <View style={styles.headerSpacer} />
       </View>
 
-      <ScrollView contentContainerStyle={styles.scroll}>
+      <ScrollView
+        contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + 34 }]}
+        keyboardShouldPersistTaps="handled"
+      >
         <Section title="Model">
-          {MODEL_OPTIONS.map((o) => (
-            <Pressable
-              key={o.id}
-              style={({ pressed }) => [styles.modelRow, pressed && styles.rowBtnPressed]}
-              onPress={() => chooseModel(o.id)}
-            >
-              <View style={styles.modelText}>
-                <Text style={styles.modelLabel}>{o.label}</Text>
-                <Text style={styles.modelNote}>{o.note}</Text>
-              </View>
-              {model === o.id ? <Ionicons name="checkmark" size={18} color="#34d399" /> : null}
-            </Pressable>
-          ))}
+          {MODEL_OPTIONS.map((o) => {
+            const selected = model === o.id;
+            return (
+              <Pressable
+                key={o.id}
+                style={({ pressed }) => [styles.modelRow, pressed && styles.rowPressed]}
+                onPress={() => chooseModel(o.id)}
+                accessibilityRole="radio"
+                accessibilityState={{ selected }}
+              >
+                <View style={[styles.radio, selected && styles.radioOn]} />
+                <View style={styles.modelText}>
+                  <Text style={[styles.modelLabel, selected && styles.modelLabelOn]}>
+                    {o.label}
+                  </Text>
+                  <Text style={styles.modelNote}>{o.note}</Text>
+                </View>
+              </Pressable>
+            );
+          })}
           <View style={styles.customRow}>
+            <View style={[styles.radio, customIsActive && styles.radioOn]} />
             <TextInput
               value={customModel}
               onChangeText={setCustomModel}
-              placeholder="any OpenRouter model ID, e.g. qwen/qwen3.8-max-prime"
-              placeholderTextColor="#6b7280"
+              placeholder="Custom OpenRouter model ID"
+              placeholderTextColor={colors.dust}
               autoCapitalize="none"
               autoCorrect={false}
               style={styles.customInput}
               onSubmitEditing={() => chooseModel(customModel)}
               returnKeyType="done"
+              accessibilityLabel="Custom model ID"
             />
             <Pressable
-              style={[styles.customBtn, !customModel.trim() && styles.buttonDisabled]}
+              style={({ pressed }) => [
+                styles.smallBtn,
+                !customModel.trim() && styles.disabled,
+                pressed && styles.pressed,
+              ]}
               onPress={() => chooseModel(customModel)}
-              disabled={!customModel.trim()}
+              disabled={!customModel.trim() || customInUse}
             >
-              {customIsActive && customModel.trim() === model ? (
-                <Ionicons name="checkmark" size={16} color="#0b0b0f" />
+              {customInUse ? (
+                <Ionicons name="checkmark" size={16} color={colors.success} />
               ) : (
-                <Text style={styles.customBtnText}>Use</Text>
+                <Text style={styles.smallBtnText}>Use</Text>
               )}
             </Pressable>
           </View>
         </Section>
-        <Text style={styles.sectionHint}>
+        <Text style={styles.hint}>
           Prices are USD per million input / output tokens. Browse more models at
           openrouter.ai/models. Takes effect on your next message.
         </Text>
 
-        <Section title="OpenRouter API Key">
+        <Section title="App">
+          <Row label="Version" value={`${appVersion} (build ${buildNumber})`} />
+          <Row label="Runtime" value={runtimeVersion} />
+          <Row label="Channel" value={channel} />
+          <Row label="Update" value={updateId} />
+          <Row label="Published" value={published} />
+          <View style={styles.statusRow}>
+            {checkStatus.kind === 'checking' ? (
+              <ActivityIndicator size="small" color={colors.dust} style={styles.statusSpinner} />
+            ) : (
+              <View style={[styles.statusDot, { backgroundColor: status.dot }]} />
+            )}
+            <Text
+              style={[styles.statusText, checkStatus.kind === 'error' && styles.statusTextError]}
+              numberOfLines={2}
+            >
+              {status.text}
+            </Text>
+            {updateReady ? (
+              <Pressable
+                style={({ pressed }) => [
+                  styles.smallBtn,
+                  styles.smallBtnPrimary,
+                  (pressed || isDownloading) && styles.pressed,
+                ]}
+                onPress={handleApply}
+                disabled={isDownloading}
+              >
+                {isDownloading ? (
+                  <ActivityIndicator size="small" color={colors.slate} />
+                ) : (
+                  <Text style={[styles.smallBtnText, styles.smallBtnPrimaryText]}>
+                    Restart to update
+                  </Text>
+                )}
+              </Pressable>
+            ) : (
+              <Pressable
+                style={({ pressed }) => [
+                  styles.smallBtn,
+                  checkStatus.kind === 'checking' && styles.disabled,
+                  pressed && styles.pressed,
+                ]}
+                onPress={handleCheck}
+                disabled={checkStatus.kind === 'checking'}
+              >
+                <Text style={styles.smallBtnText}>Check now</Text>
+              </Pressable>
+            )}
+          </View>
+        </Section>
+        {applyError || availableUpdate?.createdAt ? (
+          <Text style={[styles.hint, applyError ? styles.statusTextError : null]}>
+            {applyError ?? `Pending update published ${formatDate(availableUpdate!.createdAt!)}`}
+          </Text>
+        ) : null}
+
+        <Section title="API key">
+          <Row label="OpenRouter" value={maskKey(apiKey)} />
           <Pressable
-            style={({ pressed }) => [styles.rowBtn, pressed && styles.rowBtnPressed]}
+            style={({ pressed }) => [styles.dangerRow, pressed && styles.rowPressed]}
             onPress={() => setConfirmReset(true)}
+            accessibilityRole="button"
           >
-            <Text style={styles.rowBtnDanger}>Reset API Key</Text>
-            <Ionicons name="chevron-forward" size={16} color="#6b7280" />
+            <Text style={styles.dangerText}>Reset API key</Text>
           </Pressable>
         </Section>
-        <Text style={styles.sectionHint}>
+        <Text style={styles.hint}>
           Clears your key from the device. You'll need to paste it again to continue using
           Blank Slate.
         </Text>
-
-        <Section title="Updates">
-          <Row label="App version" value={`${appVersion} (build ${buildNumber})`} />
-          <Row label="Runtime version" value={runtimeVersion} mono />
-          <Row label="Channel" value={channel} mono />
-          <Row label="Current update" value={updateId} mono />
-          <Row label="Published" value={published} />
-
-          <View style={styles.buttonStack}>
-            <Pressable
-              style={({ pressed }) => [
-                styles.button,
-                styles.buttonSecondary,
-                checkStatus.kind === 'checking' && styles.buttonDisabled,
-                pressed && styles.buttonPressed,
-              ]}
-              onPress={handleCheck}
-              disabled={checkStatus.kind === 'checking'}
-            >
-              {checkStatus.kind === 'checking' ? (
-                <ActivityIndicator size="small" color="#e5e7eb" />
-              ) : (
-                <Text style={styles.buttonSecondaryText}>Check for updates</Text>
-              )}
-            </Pressable>
-            {checkStatusText(checkStatus) ? (
-              <Text
-                style={[
-                  styles.statusNote,
-                  checkStatus.kind === 'error' && styles.statusNoteError,
-                  checkStatus.kind === 'available' && styles.statusNoteGood,
-                ]}
-              >
-                {checkStatusText(checkStatus)}
-              </Text>
-            ) : null}
-
-            <Pressable
-              style={({ pressed }) => [
-                styles.button,
-                styles.buttonPrimary,
-                !applyEnabled && styles.buttonDisabled,
-                pressed && applyEnabled && styles.buttonPressed,
-              ]}
-              onPress={handleApply}
-              disabled={!applyEnabled}
-            >
-              {isDownloading ? (
-                <ActivityIndicator size="small" color="#0b0b0f" />
-              ) : (
-                <Text style={styles.buttonPrimaryText}>
-                  {isUpdateAvailable ? 'Download and restart' : 'No update to apply'}
-                </Text>
-              )}
-            </Pressable>
-            {applyError ? <Text style={styles.statusNoteError}>{applyError}</Text> : null}
-            {availableUpdate?.createdAt ? (
-              <Text style={styles.statusNote}>
-                Pending update published {formatDate(availableUpdate.createdAt)}
-              </Text>
-            ) : null}
-          </View>
-        </Section>
       </ScrollView>
 
       <Modal
@@ -246,28 +265,32 @@ export function SettingsScreen({ onBack, onResetKey }: Props) {
       >
         <View style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>Reset API Key?</Text>
+            <Text style={styles.modalTitle}>Reset API key?</Text>
             <Text style={styles.modalBody}>
               This will log you out. You'll need to paste your OpenRouter API key again to
               continue.
             </Text>
             <View style={styles.modalActions}>
               <Pressable
-                style={styles.modalBtn}
+                style={({ pressed }) => [styles.modalBtn, styles.modalBtnSecondary, pressed && styles.pressed]}
                 onPress={() => setConfirmReset(false)}
                 disabled={resetting}
               >
-                <Text style={styles.modalBtnMuted}>Cancel</Text>
+                <Text style={styles.modalBtnSecondaryText}>Cancel</Text>
               </Pressable>
               <Pressable
-                style={[styles.modalBtn, resetting && styles.buttonDisabled]}
+                style={({ pressed }) => [
+                  styles.modalBtn,
+                  styles.modalBtnDanger,
+                  (resetting || pressed) && styles.pressed,
+                ]}
                 onPress={handleConfirmReset}
                 disabled={resetting}
               >
                 {resetting ? (
-                  <ActivityIndicator size="small" color="#ef4444" />
+                  <ActivityIndicator size="small" color={colors.danger} />
                 ) : (
-                  <Text style={styles.modalBtnDanger}>Reset</Text>
+                  <Text style={styles.modalBtnDangerText}>Reset key</Text>
                 )}
               </Pressable>
             </View>
@@ -281,40 +304,42 @@ export function SettingsScreen({ onBack, onResetKey }: Props) {
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <View style={styles.section}>
-      <Text style={styles.sectionTitle}>{title}</Text>
-      <View style={styles.sectionBody}>{children}</View>
+      <Text style={type.sectionLabel}>{title}</Text>
+      <View style={styles.card}>{children}</View>
     </View>
   );
 }
 
-function Row({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+function Row({ label, value }: { label: string; value: string }) {
   return (
     <View style={styles.row}>
       <Text style={styles.rowLabel}>{label}</Text>
-      <Text
-        style={[styles.rowValue, mono && styles.rowValueMono]}
-        numberOfLines={1}
-        ellipsizeMode="middle"
-      >
+      <Text style={styles.rowValue} numberOfLines={1} ellipsizeMode="middle">
         {value}
       </Text>
     </View>
   );
 }
 
-function checkStatusText(s: CheckStatus): string | null {
+function statusFor(s: CheckStatus, available: boolean): { dot: string; text: string } {
+  if (available && s.kind !== 'error') return { dot: colors.info, text: 'An update is ready' };
   switch (s.kind) {
     case 'idle':
-      return null;
+      return { dot: colors.lineFaint, text: 'Not checked yet' };
     case 'checking':
-      return 'Checking…';
+      return { dot: colors.dust, text: 'Checking…' };
     case 'up-to-date':
-      return 'Up to date';
+      return { dot: colors.success, text: "You're on the latest update" };
     case 'available':
-      return 'Update available';
+      return { dot: colors.info, text: 'An update is ready' };
     case 'error':
-      return s.message;
+      return { dot: colors.danger, text: s.message };
   }
+}
+
+function maskKey(key: string | undefined): string {
+  if (!key) return 'sk-or-••••';
+  return `sk-or-••••${key.slice(-4)}`;
 }
 
 function describeUpdatesError(e: unknown): string {
@@ -333,156 +358,169 @@ function formatDate(d: Date | string | number): string {
   return date.toLocaleString();
 }
 
-const MONO = Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' });
-
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: '#0b0b0f' },
+  root: { flex: 1, backgroundColor: colors.slate },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: '#1f2937',
+    gap: 8,
+    paddingLeft: 12,
+    paddingRight: 20,
+    paddingTop: 10,
+    paddingBottom: 8,
   },
-  headerBack: { flexDirection: 'row', alignItems: 'center', gap: 2, paddingVertical: 4, paddingRight: 8 },
-  headerBackText: { color: '#fff', fontSize: 15 },
-  headerTitle: {
-    // Spans the full row to stay centered; don't let it swallow taps on Back.
-    pointerEvents: 'none',
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    textAlign: 'center',
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '700',
+  backBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: radii.button,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  headerSpacer: { flex: 1 },
-  scroll: { padding: 16, gap: 24, paddingBottom: 64 },
+  headerTitle: { ...type.screenTitle, color: colors.chalk },
+  scroll: { paddingHorizontal: 20, paddingTop: 16, gap: 24 },
 
   section: { gap: 10 },
-  sectionTitle: {
-    color: '#9ca3af',
-    fontSize: 11,
-    textTransform: 'uppercase',
-    letterSpacing: 0.8,
-    fontWeight: '700',
-    paddingHorizontal: 4,
-  },
-  sectionBody: {
-    backgroundColor: '#111827',
-    borderRadius: 12,
+  card: {
+    backgroundColor: colors.board,
+    borderRadius: radii.card,
     borderWidth: 1,
-    borderColor: '#1f2937',
+    borderColor: colors.line,
     overflow: 'hidden',
   },
-  sectionHint: {
-    color: '#6b7280',
+  hint: {
+    fontFamily: fonts.body,
     fontSize: 12,
     lineHeight: 18,
+    color: colors.dust,
     paddingHorizontal: 4,
     marginTop: -14,
   },
 
-  rowBtn: {
+  rowPressed: { backgroundColor: colors.raised },
+  pressed: { opacity: 0.75 },
+  disabled: { opacity: 0.4 },
+
+  modelRow: {
+    minHeight: 60,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.line,
+  },
+  radio: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    borderWidth: 2,
+    borderColor: colors.lineFaint,
+  },
+  radioOn: { borderWidth: 6, borderColor: colors.accent },
+  modelText: { flex: 1, gap: 2 },
+  modelLabel: { fontFamily: fonts.bodyMedium, fontSize: 15, color: colors.chalk },
+  modelLabelOn: { fontFamily: fonts.bodySemi },
+  modelNote: { ...type.caption, color: colors.dust },
+  customRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 10,
+    paddingLeft: 16,
+    paddingRight: 10,
+  },
+  customInput: {
+    flex: 1,
+    minWidth: 0,
+    height: 44,
+    paddingHorizontal: 12,
+    borderRadius: radii.input,
+    borderWidth: 1,
+    borderColor: colors.lineStrong,
+    backgroundColor: colors.slate,
+    color: colors.chalk,
+    fontFamily: fonts.mono,
+    fontSize: 12,
+  },
+  smallBtn: {
+    height: 40,
+    minWidth: 56,
+    paddingHorizontal: 14,
+    borderRadius: radii.input,
+    borderWidth: 1,
+    borderColor: colors.lineStrong,
+    backgroundColor: colors.raised,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  smallBtnText: { fontFamily: fonts.bodyMedium, fontSize: 13, color: colors.chalk },
+  smallBtnPrimary: { backgroundColor: colors.accent, borderColor: colors.accent },
+  smallBtnPrimaryText: { fontFamily: fonts.bodySemi, color: colors.slate },
+
+  row: {
+    minHeight: 48,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 14,
-    paddingVertical: 14,
+    gap: 12,
+    paddingHorizontal: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.line,
   },
-  rowBtnPressed: { backgroundColor: '#1f2937' },
-  modelRow: {
+  rowLabel: { fontFamily: fonts.body, fontSize: 14, color: colors.chalk },
+  rowValue: {
+    flexShrink: 1,
+    textAlign: 'right',
+    fontFamily: fonts.mono,
+    fontSize: 12,
+    color: colors.chalkMuted,
+  },
+  statusRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#1f2937',
-    gap: 12,
+    gap: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
   },
-  modelText: { flex: 1, gap: 2 },
-  modelLabel: { color: '#e5e7eb', fontSize: 14, fontWeight: '600' },
-  modelNote: { color: '#6b7280', fontSize: 12 },
-  customRow: { flexDirection: 'row', alignItems: 'center', gap: 8, padding: 10 },
-  customInput: {
-    flex: 1,
-    backgroundColor: '#0b0b0f',
-    borderWidth: 1,
-    borderColor: '#2a2a30',
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    color: '#fff',
-    fontSize: 13,
-    fontFamily: MONO,
-  },
-  customBtn: {
-    backgroundColor: '#fff',
-    paddingHorizontal: 14,
-    paddingVertical: 9,
-    borderRadius: 8,
-    minWidth: 52,
-    alignItems: 'center',
-  },
-  customBtnText: { color: '#0b0b0f', fontWeight: '700', fontSize: 13 },
-  rowBtnDanger: { color: '#ef4444', fontSize: 14, fontWeight: '600' },
+  statusDot: { width: 8, height: 8, borderRadius: 4 },
+  statusSpinner: { width: 8, transform: [{ scale: 0.6 }] },
+  statusText: { flex: 1, fontFamily: fonts.body, fontSize: 13, color: colors.dust },
+  statusTextError: { color: colors.danger },
+
+  dangerRow: { minHeight: 48, justifyContent: 'center', paddingHorizontal: 16 },
+  dangerText: { fontFamily: fonts.bodyMedium, fontSize: 14, color: colors.danger },
 
   modalBackdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.6)',
+    backgroundColor: 'rgba(10,10,12,0.72)',
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 24,
   },
   modalCard: {
-    backgroundColor: '#111827',
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: '#1f2937',
-    padding: 18,
-    gap: 10,
     width: '100%',
     maxWidth: 360,
+    padding: 20,
+    gap: 10,
+    borderRadius: radii.card,
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.board,
   },
-  modalTitle: { color: '#fff', fontSize: 16, fontWeight: '700' },
-  modalBody: { color: '#d1d5db', fontSize: 13, lineHeight: 19 },
-  modalActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 8, marginTop: 6 },
-  modalBtn: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8 },
-  modalBtnMuted: { color: '#9ca3af', fontSize: 14, fontWeight: '600' },
-  modalBtnDanger: { color: '#ef4444', fontSize: 14, fontWeight: '700' },
-
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#1f2937',
-    gap: 12,
-  },
-  rowLabel: { color: '#9ca3af', fontSize: 13 },
-  rowValue: { color: '#e5e7eb', fontSize: 13, flexShrink: 1, textAlign: 'right' },
-  rowValueMono: { fontFamily: MONO, fontSize: 12 },
-
-  buttonStack: { gap: 8, padding: 12 },
-  button: {
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    borderRadius: 10,
+  modalTitle: { fontFamily: fonts.displaySemi, fontSize: 20, color: colors.chalk },
+  modalBody: { fontFamily: fonts.body, fontSize: 14, lineHeight: 21, color: colors.chalkMuted },
+  modalActions: { flexDirection: 'row', gap: 10, marginTop: 10 },
+  modalBtn: {
+    flex: 1,
+    height: 48,
+    borderRadius: radii.button,
+    borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  buttonPrimary: { backgroundColor: '#fff' },
-  buttonPrimaryText: { color: '#0b0b0f', fontWeight: '700', fontSize: 14 },
-  buttonSecondary: { backgroundColor: '#1f2937', borderWidth: 1, borderColor: '#374151' },
-  buttonSecondaryText: { color: '#e5e7eb', fontWeight: '600', fontSize: 14 },
-  buttonPressed: { opacity: 0.85 },
-  buttonDisabled: { opacity: 0.4 },
-
-  statusNote: { color: '#9ca3af', fontSize: 12, paddingHorizontal: 2 },
-  statusNoteError: { color: '#f87171', fontSize: 12, paddingHorizontal: 2 },
-  statusNoteGood: { color: '#34d399', fontSize: 12, paddingHorizontal: 2 },
+  modalBtnSecondary: { backgroundColor: colors.board, borderColor: colors.lineStrong },
+  modalBtnSecondaryText: { fontFamily: fonts.bodyMedium, fontSize: 15, color: colors.chalk },
+  modalBtnDanger: { backgroundColor: colors.dangerBg, borderColor: colors.dangerBorder },
+  modalBtnDangerText: { fontFamily: fonts.bodyMedium, fontSize: 15, color: colors.danger },
 });

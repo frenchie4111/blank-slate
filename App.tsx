@@ -5,6 +5,8 @@ import { SafeAreaProvider, initialWindowMetrics } from 'react-native-safe-area-c
 import { MainScreen } from './src/screens/MainScreen';
 import { OnboardingScreen } from './src/screens/OnboardingScreen';
 import { clearApiKey, getApiKey } from './src/storage/keyStore';
+import { colors } from './src/theme';
+import { useAppFonts } from './src/theme/useAppFonts';
 
 LogBox.ignoreAllLogs();
 // ignoreAllLogs() doesn't suppress the fullscreen "Render Error" overlay
@@ -27,6 +29,7 @@ type Gate = { stage: 'loading' } | { stage: 'onboarding' } | { stage: 'ready'; a
 
 export default function App() {
   const [gate, setGate] = React.useState<Gate>({ stage: 'loading' });
+  const fontsReady = useAppFonts();
 
   React.useEffect(() => {
     let alive = true;
@@ -59,9 +62,9 @@ export default function App() {
     // recovering from an error state.
     <SafeAreaProvider initialMetrics={initialWindowMetrics}>
       <View style={styles.root}>
-        {gate.stage === 'loading' ? (
+        {gate.stage === 'loading' || !fontsReady ? (
           <View style={styles.loading}>
-            <ActivityIndicator color="#fff" />
+            <ActivityIndicator color={colors.dust} />
           </View>
         ) : gate.stage === 'onboarding' ? (
           <OnboardingScreen onDone={handleOnboardingDone} />
@@ -75,6 +78,6 @@ export default function App() {
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: '#0b0b0f' },
+  root: { flex: 1, backgroundColor: colors.slate },
   loading: { flex: 1, alignItems: 'center', justifyContent: 'center' },
 });

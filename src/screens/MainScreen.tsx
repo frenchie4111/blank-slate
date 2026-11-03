@@ -4,7 +4,6 @@ import {
   ActivityIndicator,
   Image,
   KeyboardAvoidingView,
-  Modal,
   Platform,
   Pressable,
   ScrollView,
@@ -18,8 +17,8 @@ import { runAgentTurn, type AgentEvent, type AgentRun } from '../agent/agent';
 import type { ChatMessage } from '../agent/openrouter';
 import { DynamicView, type RenderError } from '../dynamic/DynamicView';
 import { clearCompileCache } from '../dynamic/resolver';
+import { AppIcon } from '../components/AppIcon';
 import {
-  emptySnapshot,
   loadChat,
   saveChat,
   type Entry,
@@ -28,11 +27,15 @@ import {
 } from '../project/chatStore';
 import * as projectStore from '../project/store';
 import type { Project } from '../project/store';
+import { getModel } from '../storage/keyStore';
+import { colors, fonts, radii, space } from '../theme';
+import { LogoMark } from '../theme/LogoMark';
+import * as vfs from '../vfs/vfs';
 import { FilesPanel } from './FileViewer';
 import { Markdown } from './Markdown';
 import { SettingsScreen } from './SettingsScreen';
-import { getModel } from '../storage/keyStore';
-import { readFile } from '../vfs/vfs';
+import { buildRenderItems, ToolGroupCard, type RenderItem } from './ToolGroup';
+import { YourAppsScreen } from './YourAppsScreen';
 
 const ICON_SRC = require('../../assets/icon.png');
 
@@ -48,13 +51,15 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
   const [settingsVisible, setSettingsVisible] = React.useState(false);
   const [projects, setProjects] = React.useState<Project[]>([]);
   const [currentId, setCurrentId] = React.useState<string | null>(null);
-  const [switcherOpen, setSwitcherOpen] = React.useState(false);
+  const [appsOpen, setAppsOpen] = React.useState(false);
+  const [fileCount, setFileCount] = React.useState(0);
   const [activeTab, setActiveTab] = React.useState<'chat' | 'files'>('chat');
   const [renderRevision, setRenderRevision] = React.useState(0);
   const [renderError, setRenderError] = React.useState<RenderError | null>(null);
 
   const historyRef = React.useRef<ChatMessage[]>([]);
   const runRef = React.useRef<AgentRun | null>(null);
+  const stoppedRef = React.useRef(false);
   const scrollRef = React.useRef<ScrollView | null>(null);
   const activeProjectRef = React.useRef<string | null>(null);
   const renderErrorRef = React.useRef<RenderError | null>(null);
@@ -108,6 +113,18 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
       setRenderRevision((r) => r + 1);
     });
   }, []);
+
+  React.useEffect(() => {
+    if (!currentId) return;
+    let alive = true;
+    const refresh = () => vfs.listFiles().then((l) => alive && setFileCount(l.length));
+    refresh();
+    const unsub = vfs.subscribe(refresh);
+    return () => {
+      alive = false;
+      unsub();
+    };
+  }, [currentId]);
 
   const persist = React.useCallback(
     (history: ChatMessage[], nextEntries: Entry[]) => {
@@ -196,13 +213,15 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
     async (text: string): Promise<void> => {
       if (!text.trim()) return;
       setRunning(true);
+      stoppedRef.current = false;
       setEntries((prev) => [...prev, { kind: 'user', id: `u-${prev.length}`, text }]);
       const projectAtStart = activeProjectRef.current;
+      const priorHistory = historyRef.current;
       try {
         const model = await getModel();
         const run = runAgentTurn(
           { apiKey, model, sessionId: `blank-slate:${projectAtStart ?? 'default'}` },
-          historyRef.current,
+          priorHistory,
           text,
           handleEvent,
         );
@@ -215,8 +234,27 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
             return latest;
           });
         }
+        if (projectAtStart) projectStore.touch(projectAtStart).catch(() => {});
       } catch {
-        // runAgentTurn already emits 'error' via handleEvent.
+        // runAgentTurn already emits 'error' via handleEvent, except on a
+        // user stop: keep the request in history so the next turn has context
+        // (any files already written stay written).
+        if (stoppedRef.current && projectAtStart === activeProjectRef.current) {
+          const nextHistory: ChatMessage[] = [
+            ...priorHistory,
+            { role: 'user', content: text },
+            { role: 'assistant', content: '(Stopped by the user before finishing.)' },
+          ];
+          historyRef.current = nextHistory;
+          setEntries((prev) => {
+            const next: Entry[] = [
+              ...prev,
+              { kind: 'notice', id: `stop-${prev.length}`, text: 'Stopped' },
+            ];
+            persist(nextHistory, next);
+            return next;
+          });
+        }
       } finally {
         setRunning(false);
         runRef.current = null;
@@ -224,6 +262,12 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
     },
     [apiKey, handleEvent, persist],
   );
+
+  const stop = () => {
+    if (!runRef.current) return;
+    stoppedRef.current = true;
+    runRef.current.abort();
+  };
 
   const send = async () => {
     const text = input.trim();
@@ -250,20 +294,34 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
     setTimeout(() => setRenderError(null), 0);
   }, []);
 
-  const openSwitcher = () => {
+  const openApps = () => {
     if (running) return;
-    setSwitcherOpen(true);
+    setAppsOpen(true);
+  };
+
+  const openApp = async (id: string) => {
+    if (id !== currentId) await projectStore.switchTo(id);
+    setAppsOpen(false);
+    setChatVisible(false);
+  };
+
+  const startNewApp = async (id: string) => {
+    await projectStore.switchTo(id);
+    setAppsOpen(false);
+    setActiveTab('chat');
+    setChatVisible(true);
   };
 
   if (!ready) {
     return (
       <View style={styles.loading}>
-        <ActivityIndicator color="#fff" />
+        <ActivityIndicator color={colors.dust} />
       </View>
     );
   }
 
   const currentProject = projects.find((p) => p.id === currentId) ?? null;
+  const canSend = !!input.trim() && !running;
 
   return (
     <View style={styles.root}>
@@ -290,131 +348,139 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
       {chatVisible ? (
         <View style={styles.chatOverlay}>
           <KeyboardAvoidingView
-            style={StyleSheet.absoluteFill}
+            style={[StyleSheet.absoluteFill, { paddingTop: insets.top }]}
             behavior={Platform.OS === 'ios' ? 'padding' : undefined}
           >
             <View style={styles.chatHeader}>
               <Pressable
                 onPress={() => setChatVisible(false)}
-                hitSlop={10}
-                style={styles.chatHeaderBadge}
+                style={({ pressed }) => [styles.logoBtn, pressed && styles.pressed]}
+                accessibilityRole="button"
                 accessibilityLabel="Back to app"
               >
-                <Image source={ICON_SRC} style={styles.chatHeaderIcon} />
+                <LogoMark size={20} />
               </Pressable>
               <Pressable
-                onPress={openSwitcher}
-                hitSlop={8}
-                style={styles.projectTitleBtn}
+                onPress={openApps}
+                style={({ pressed }) => [styles.titleBtn, pressed && styles.pressed]}
                 disabled={running}
+                accessibilityRole="button"
+                accessibilityLabel="Your apps"
               >
+                {currentProject ? <AppIcon project={currentProject} size={24} /> : null}
                 <Text style={styles.projectTitle} numberOfLines={1}>
                   {currentProject?.name ?? 'Blank Slate'}
                 </Text>
-                <Text style={styles.projectChevron}>▾</Text>
+                <Ionicons
+                  name="chevron-down"
+                  size={16}
+                  color={running ? colors.lineFaint : colors.dust}
+                />
               </Pressable>
-              <View style={styles.chatHeaderActions}>
-                <Pressable onPress={() => setChatVisible(false)} hitSlop={10}>
-                  <Text style={styles.headerAction}>back to app</Text>
-                </Pressable>
-                <Pressable
-                  onPress={() => setSettingsVisible(true)}
-                  hitSlop={10}
-                  accessibilityLabel="Open settings"
-                >
-                  <Ionicons name="settings-outline" size={20} color="#9ca3af" />
-                </Pressable>
+              <Pressable
+                onPress={() => setSettingsVisible(true)}
+                style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]}
+                accessibilityRole="button"
+                accessibilityLabel="Settings"
+              >
+                <Ionicons name="options-outline" size={21} color={colors.dust} />
+              </Pressable>
+            </View>
+
+            <View style={styles.segmentWrap}>
+              <View style={styles.segment}>
+                <SegmentButton
+                  label="Chat"
+                  active={activeTab === 'chat'}
+                  onPress={() => setActiveTab('chat')}
+                />
+                <SegmentButton
+                  label={fileCount ? `Files · ${fileCount}` : 'Files'}
+                  active={activeTab === 'files'}
+                  onPress={() => setActiveTab('files')}
+                />
               </View>
             </View>
 
-            <View style={styles.tabBar}>
-              <TabButton
-                label="Chat"
-                active={activeTab === 'chat'}
-                onPress={() => setActiveTab('chat')}
-              />
-              <TabButton
-                label="Files"
-                active={activeTab === 'files'}
-                onPress={() => setActiveTab('files')}
-              />
-            </View>
-
             {renderError ? (
-              <View style={styles.errorBanner}>
-                <View style={styles.errorBannerText}>
-                  <Text style={styles.errorBannerTitle}>
-                    App crashed: {renderError.stage} in {renderError.path}
+              <View style={styles.crash}>
+                <View style={styles.crashText}>
+                  <Text style={styles.crashTitle}>
+                    {renderError.stage === 'runtime'
+                      ? 'App crashed while rendering'
+                      : `App failed during ${renderError.stage}`}
                   </Text>
-                  <Text style={styles.errorBannerMsg} numberOfLines={2}>
-                    {renderError.message}
+                  <Text style={styles.crashMsg} numberOfLines={1}>
+                    {renderError.path} · {renderError.message}
                   </Text>
                 </View>
                 <Pressable
-                  style={[styles.errorBannerBtn, running && styles.errorBannerBtnDisabled]}
+                  style={({ pressed }) => [
+                    styles.fixBtn,
+                    (running || pressed) && styles.pressed,
+                  ]}
                   onPress={fixRenderErrorNow}
                   disabled={running}
+                  accessibilityRole="button"
                 >
-                  <Text style={styles.errorBannerBtnText}>Fix</Text>
+                  <Text style={styles.fixBtnText}>Fix it</Text>
                 </Pressable>
               </View>
             ) : null}
 
             {activeTab === 'chat' ? (
               <>
-                <ScrollView
-                  ref={scrollRef}
-                  contentContainerStyle={styles.messages}
-                  onContentSizeChange={() =>
-                    scrollRef.current?.scrollToEnd({ animated: true })
-                  }
-                >
-                  {entries.length === 0 ? (
-                    <Text style={styles.hint}>
-                      Describe what to build — e.g. "a counter with a red increment button,
-                      and extract the button into components/Button.tsx".
-                    </Text>
-                  ) : (
-                    entries.map((e, i) => (
-                      <EntryView
-                        key={e.id}
-                        entry={e}
-                        streaming={running && i === entries.length - 1}
-                      />
-                    ))
-                  )}
-                  {running ? (
-                    <View style={styles.statusRow}>
-                      <ActivityIndicator size="small" color="#6b7280" />
-                      <Text style={styles.statusText}>thinking…</Text>
-                    </View>
-                  ) : null}
-                </ScrollView>
+                <ChatLog
+                  entries={entries}
+                  running={running}
+                  scrollRef={scrollRef}
+                />
 
-                <View style={[styles.inputRow, { paddingBottom: 10 + insets.bottom }]}>
-                  <TextInput
-                    value={input}
-                    onChangeText={setInput}
-                    placeholder="describe something to build"
-                    placeholderTextColor="#888"
-                    style={styles.input}
-                    editable={!running}
-                    multiline
-                    onSubmitEditing={send}
-                    returnKeyType="send"
-                    blurOnSubmit
-                  />
-                  <Pressable
-                    style={[styles.sendBtn, (!input.trim() || running) && styles.sendBtnDisabled]}
-                    onPress={send}
-                    disabled={!input.trim() || running}
-                  >
+                <View style={[styles.composerWrap, { paddingBottom: 10 + insets.bottom }]}>
+                  <View style={styles.composer}>
+                    <TextInput
+                      value={input}
+                      onChangeText={setInput}
+                      placeholder="Describe something to build"
+                      placeholderTextColor={colors.dust}
+                      style={styles.input}
+                      multiline
+                      // RN Web renders a 2-row textarea by default.
+                      numberOfLines={Platform.OS === 'web' ? 1 : undefined}
+                      onSubmitEditing={send}
+                      returnKeyType="send"
+                      blurOnSubmit
+                      accessibilityLabel="Message"
+                    />
                     {running ? (
-                      <ActivityIndicator color="#0b0b0f" size="small" />
+                      <Pressable
+                        style={({ pressed }) => [styles.sendBtn, pressed && styles.pressed]}
+                        onPress={stop}
+                        accessibilityRole="button"
+                        accessibilityLabel="Stop"
+                      >
+                        <View style={styles.stopSquare} />
+                      </Pressable>
                     ) : (
-                      <Text style={styles.sendBtnText}>send</Text>
+                      <Pressable
+                        style={({ pressed }) => [
+                          styles.sendBtn,
+                          !canSend && styles.sendBtnIdle,
+                          pressed && styles.pressed,
+                        ]}
+                        onPress={send}
+                        disabled={!canSend}
+                        accessibilityRole="button"
+                        accessibilityLabel="Send"
+                      >
+                        <Ionicons
+                          name="arrow-up"
+                          size={22}
+                          color={canSend ? colors.slate : colors.dust}
+                        />
+                      </Pressable>
                     )}
-                  </Pressable>
+                  </View>
                 </View>
               </>
             ) : (
@@ -424,16 +490,22 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
         </View>
       ) : null}
 
-      <ProjectSwitcher
-        open={switcherOpen}
-        onClose={() => setSwitcherOpen(false)}
-        projects={projects}
-        currentId={currentId}
-      />
+      {appsOpen ? (
+        <View style={styles.fullOverlay}>
+          <YourAppsScreen
+            projects={projects}
+            currentId={currentId}
+            onClose={() => setAppsOpen(false)}
+            onOpen={openApp}
+            onCreated={startNewApp}
+          />
+        </View>
+      ) : null}
 
       {settingsVisible ? (
-        <View style={styles.settingsOverlay}>
+        <View style={styles.fullOverlay}>
           <SettingsScreen
+            apiKey={apiKey}
             onBack={() => setSettingsVisible(false)}
             onResetKey={async () => {
               setSettingsVisible(false);
@@ -446,7 +518,7 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
   );
 }
 
-function TabButton({
+function SegmentButton({
   label,
   active,
   onPress,
@@ -456,381 +528,120 @@ function TabButton({
   onPress: () => void;
 }) {
   return (
-    <Pressable onPress={onPress} style={[styles.tabBtn, active && styles.tabBtnActive]}>
-      <Text style={[styles.tabBtnText, active && styles.tabBtnTextActive]}>{label}</Text>
+    <Pressable
+      onPress={onPress}
+      style={[styles.segmentBtn, active && styles.segmentBtnActive]}
+      accessibilityRole="tab"
+      accessibilityState={{ selected: active }}
+    >
+      <Text style={[styles.segmentText, active && styles.segmentTextActive]}>{label}</Text>
     </Pressable>
   );
 }
 
-function ProjectSwitcher({
-  open,
-  onClose,
-  projects,
-  currentId,
+function ChatLog({
+  entries,
+  running,
+  scrollRef,
 }: {
-  open: boolean;
-  onClose: () => void;
-  projects: Project[];
-  currentId: string | null;
+  entries: Entry[];
+  running: boolean;
+  scrollRef: React.RefObject<ScrollView | null>;
 }) {
-  const [creating, setCreating] = React.useState(false);
-  const [newName, setNewName] = React.useState('');
-  const [busy, setBusy] = React.useState(false);
-  const [renamingId, setRenamingId] = React.useState<string | null>(null);
-  const [renameValue, setRenameValue] = React.useState('');
-
+  const items = React.useMemo(() => buildRenderItems(entries, running), [entries, running]);
+  const last = items[items.length - 1];
+  // A live tool group shows its own spinner; otherwise show "Thinking" until
+  // the reply's first text arrives.
+  const thinking =
+    running && !(last?.type === 'tools' && last.active) && !isStreamingText(last);
+  // Follow new output only while the reader is at the bottom, so expanding a
+  // tool card further up doesn't yank the view away. Jumps (not animated
+  // scrolls) keep onScroll from seeing mid-animation offsets.
+  const stickRef = React.useRef(true);
   React.useEffect(() => {
-    if (!open) {
-      setCreating(false);
-      setNewName('');
-      setRenamingId(null);
-      setRenameValue('');
-    }
-  }, [open]);
-
-  const handleSwitch = async (id: string) => {
-    if (id === currentId || busy) return;
-    setBusy(true);
-    try {
-      await projectStore.switchTo(id);
-      onClose();
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleCreate = async () => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      const project = await projectStore.create(newName);
-      await projectStore.switchTo(project.id);
-      onClose();
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleStartRename = (p: Project) => {
-    setRenamingId(p.id);
-    setRenameValue(p.name);
-  };
-
-  const handleSubmitRename = async () => {
-    if (!renamingId || busy) return;
-    setBusy(true);
-    try {
-      await projectStore.rename(renamingId, renameValue);
-      setRenamingId(null);
-      setRenameValue('');
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleDelete = async (id: string) => {
-    if (busy || projects.length <= 1) return;
-    setBusy(true);
-    try {
-      await projectStore.remove(id);
-    } finally {
-      setBusy(false);
-    }
-  };
-
+    if (running) stickRef.current = true;
+  }, [running]);
   return (
-    <Modal
-      transparent
-      visible={open}
-      animationType="fade"
-      onRequestClose={onClose}
+    <ScrollView
+      ref={scrollRef}
+      contentContainerStyle={styles.messages}
+      keyboardShouldPersistTaps="handled"
+      scrollEventThrottle={64}
+      onScroll={({ nativeEvent: n }) => {
+        const fromBottom = n.contentSize.height - n.layoutMeasurement.height - n.contentOffset.y;
+        stickRef.current = fromBottom < 48;
+      }}
+      onContentSizeChange={() => {
+        if (stickRef.current) scrollRef.current?.scrollToEnd({ animated: false });
+      }}
     >
-      <View style={styles.sheetOverlay}>
-        <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
-        <View style={styles.sheet}>
-          <Text style={styles.sheetTitle}>Projects</Text>
-
-          <ScrollView style={styles.sheetList}>
-            {projects.map((p) => {
-              const isCurrent = p.id === currentId;
-              const isRenaming = renamingId === p.id;
-              return (
-                <View key={p.id} style={styles.projectRow}>
-                  {isRenaming ? (
-                    <TextInput
-                      value={renameValue}
-                      onChangeText={setRenameValue}
-                      autoFocus
-                      style={styles.renameInput}
-                      onSubmitEditing={handleSubmitRename}
-                      returnKeyType="done"
-                      placeholder="project name"
-                      placeholderTextColor="#6b7280"
-                    />
-                  ) : (
-                    <Pressable
-                      style={styles.projectNameBtn}
-                      onPress={() => handleSwitch(p.id)}
-                      disabled={busy}
-                    >
-                      <Text style={[styles.projectName, isCurrent && styles.projectNameCurrent]}>
-                        {p.name}
-                      </Text>
-                      {isCurrent ? <Text style={styles.currentMark}>current</Text> : null}
-                    </Pressable>
-                  )}
-                  <View style={styles.projectActions}>
-                    {isRenaming ? (
-                      <>
-                        <Pressable onPress={handleSubmitRename} hitSlop={6}>
-                          <Text style={styles.actionText}>save</Text>
-                        </Pressable>
-                        <Pressable onPress={() => setRenamingId(null)} hitSlop={6}>
-                          <Text style={styles.actionTextMuted}>cancel</Text>
-                        </Pressable>
-                      </>
-                    ) : (
-                      <>
-                        <Pressable onPress={() => handleStartRename(p)} hitSlop={6}>
-                          <Text style={styles.actionTextMuted}>rename</Text>
-                        </Pressable>
-                        {projects.length > 1 ? (
-                          <Pressable onPress={() => handleDelete(p.id)} hitSlop={6}>
-                            <Text style={styles.actionTextDanger}>delete</Text>
-                          </Pressable>
-                        ) : null}
-                      </>
-                    )}
-                  </View>
-                </View>
-              );
-            })}
-          </ScrollView>
-
-          <View style={styles.sheetFooter}>
-            {creating ? (
-              <View style={styles.newRow}>
-                <TextInput
-                  value={newName}
-                  onChangeText={setNewName}
-                  autoFocus
-                  placeholder="name (e.g. habit tracker)"
-                  placeholderTextColor="#6b7280"
-                  style={styles.newInput}
-                  onSubmitEditing={handleCreate}
-                  returnKeyType="done"
-                />
-                <Pressable
-                  style={[styles.newBtn, busy && styles.newBtnDisabled]}
-                  onPress={handleCreate}
-                  disabled={busy}
-                >
-                  <Text style={styles.newBtnText}>create</Text>
-                </Pressable>
-                <Pressable onPress={() => setCreating(false)} hitSlop={6}>
-                  <Text style={styles.actionTextMuted}>cancel</Text>
-                </Pressable>
-              </View>
-            ) : (
-              <Pressable
-                style={styles.addProjectBtn}
-                onPress={() => setCreating(true)}
-                disabled={busy}
-              >
-                <Text style={styles.addProjectText}>+ New project</Text>
-              </Pressable>
-            )}
-          </View>
+      {items.length === 0 ? (
+        <View style={styles.empty}>
+          <Text style={styles.emptyTitle}>What should this app become?</Text>
+          <Text style={styles.emptyBody}>
+            Try "a counter with a red increment button, and pull the button into
+            components/Button.tsx".
+          </Text>
         </View>
-      </View>
-    </Modal>
+      ) : (
+        items.map((item) => <ItemView key={item.id} item={item} />)
+      )}
+      {thinking ? (
+        <View style={styles.thinking}>
+          <ActivityIndicator size="small" color={colors.dust} />
+          <Text style={styles.thinkingText}>Thinking…</Text>
+        </View>
+      ) : null}
+    </ScrollView>
   );
+}
+
+function isStreamingText(item: RenderItem | undefined): boolean {
+  return item?.type === 'entry' && item.entry.kind === 'assistant';
+}
+
+function ItemView({ item }: { item: RenderItem }) {
+  if (item.type === 'tools') return <ToolGroupCard steps={item.steps} active={item.active} />;
+  return <EntryView entry={item.entry} />;
 }
 
 // Memoized so a streaming chunk only re-renders the entry it touched —
 // handleEvent keeps object identity for every other entry.
 const EntryView = React.memo(function EntryView({
   entry,
-  streaming,
 }: {
-  entry: Entry;
-  streaming: boolean;
+  entry: Exclude<Entry, ToolEntry | ServerToolEntry>;
 }) {
   if (entry.kind === 'user') {
     return (
-      <View style={[styles.bubble, styles.bubbleUser]}>
-        <Text style={styles.bubbleTextUser}>{entry.text}</Text>
+      <View style={styles.userBubble}>
+        <Text style={styles.userText}>{entry.text}</Text>
       </View>
     );
   }
   if (entry.kind === 'assistant') {
+    // Whitespace-only blocks are filtered out by buildRenderItems.
     return (
-      <AssistantBubble text={entry.text} streaming={streaming} />
-    );
-  }
-  if (entry.kind === 'error') {
-    return (
-      <View style={[styles.bubble, styles.bubbleError]}>
-        <Text style={styles.bubbleTextError}>⚠︎ {entry.text}</Text>
+      <View style={styles.assistant}>
+        <Markdown text={entry.text.trim()} />
       </View>
     );
   }
-  if (entry.kind === 'serverTool') {
-    return <ServerToolCard entry={entry} />;
+  if (entry.kind === 'notice') {
+    return (
+      <View style={styles.notice}>
+        <Ionicons name="stop-circle-outline" size={14} color={colors.dust} />
+        <Text style={styles.noticeText}>{entry.text}</Text>
+      </View>
+    );
   }
-  return <ToolCard entry={entry} />;
+  return (
+    <View style={styles.errorCard}>
+      <Ionicons name="alert-circle-outline" size={16} color={colors.danger} />
+      <Text style={styles.errorText}>{entry.text}</Text>
+    </View>
+  );
 });
-
-function AssistantBubble({ text, streaming }: { text: string; streaming: boolean }) {
-  // Models sometimes emit whitespace-only text blocks or pad replies with
-  // dozens of blank lines; neither should produce a bubble.
-  const trimmed = text.trim();
-  if (!trimmed) {
-    return streaming ? (
-      <View style={[styles.bubble, styles.bubbleAssistant]}>
-        <Text style={styles.bubbleTextAssistant}>…</Text>
-      </View>
-    ) : null;
-  }
-  return (
-    <View style={[styles.bubble, styles.bubbleAssistant]}>
-      <Markdown text={trimmed} />
-    </View>
-  );
-}
-
-function ServerToolCard({ entry }: { entry: ServerToolEntry }) {
-  const [expanded, setExpanded] = React.useState(false);
-  const iconName = entry.name === 'web_fetch' ? 'globe-outline' : 'search-outline';
-  const label =
-    entry.name === 'web_sources'
-      ? `web sources (${entry.result?.kind === 'web_search' ? entry.result.results.length : 0})`
-      : entry.name === 'web_search'
-        ? `web_search(${JSON.stringify(entry.input.query ?? '')})`
-        : `web_fetch(${stringOr(entry.input.url, '')})`;
-  const result = entry.result;
-  return (
-    <Pressable onPress={() => setExpanded((v) => !v)} style={styles.serverToolCard}>
-      <View style={styles.toolHeader}>
-        <Ionicons name={iconName} size={14} color="#93c5fd" style={styles.serverToolIcon} />
-        <Text style={styles.toolSummary} numberOfLines={expanded ? 0 : 1}>
-          {label}
-        </Text>
-        {result ? (
-          <Text
-            style={[
-              styles.toolStatus,
-              result.kind === 'error' ? styles.toolErr : styles.toolOk,
-            ]}
-          >
-            {result.kind === 'error' ? '✗' : '✓'}
-          </Text>
-        ) : (
-          <ActivityIndicator size="small" color="#6b7280" />
-        )}
-      </View>
-      {expanded ? (
-        <View style={styles.toolBody}>
-          {renderServerToolBody(entry)}
-        </View>
-      ) : null}
-    </Pressable>
-  );
-}
-
-function renderServerToolBody(entry: ServerToolEntry): React.ReactNode {
-  const result = entry.result;
-  if (!result) {
-    return <Text style={styles.toolDetail}>…</Text>;
-  }
-  if (result.kind === 'error') {
-    return <Text style={styles.toolDetail}>error: {result.error_code}</Text>;
-  }
-  if (result.kind === 'web_search') {
-    if (result.results.length === 0) {
-      return <Text style={styles.toolDetail}>(no results)</Text>;
-    }
-    return (
-      <View style={{ gap: 6 }}>
-        {result.results.map((r, i) => (
-          <View key={`${r.url}-${i}`} style={{ gap: 2 }}>
-            <Text style={styles.searchTitle} numberOfLines={2}>
-              {r.title}
-            </Text>
-            <Text style={styles.searchUrl} numberOfLines={1}>
-              {r.url}
-            </Text>
-          </View>
-        ))}
-      </View>
-    );
-  }
-  return (
-    <View style={{ gap: 4 }}>
-      {result.title ? <Text style={styles.searchTitle}>{result.title}</Text> : null}
-      <Text style={styles.searchUrl} numberOfLines={1}>
-        {result.url}
-      </Text>
-      {result.retrieved_at ? (
-        <Text style={styles.toolLabel}>retrieved {result.retrieved_at}</Text>
-      ) : null}
-      <Text style={styles.toolDetail}>{result.preview}</Text>
-    </View>
-  );
-}
-
-function ToolCard({ entry }: { entry: ToolEntry }) {
-  const [expanded, setExpanded] = React.useState(false);
-  const summary = formatToolSummary(entry.name, entry.input);
-  const icon = iconFor(entry.name);
-  const showThumb =
-    entry.name === 'generate_image' && entry.result?.ok === true && typeof entry.input.path === 'string';
-  return (
-    <Pressable onPress={() => setExpanded((v) => !v)} style={styles.toolCard}>
-      <View style={styles.toolHeader}>
-        <Text style={styles.toolIcon}>{icon}</Text>
-        <Text style={styles.toolSummary} numberOfLines={expanded ? 0 : 1}>
-          {summary}
-        </Text>
-        {entry.result ? (
-          <Text style={[styles.toolStatus, entry.result.ok ? styles.toolOk : styles.toolErr]}>
-            {entry.result.ok ? '✓' : '✗'}
-          </Text>
-        ) : (
-          <ActivityIndicator size="small" color="#6b7280" />
-        )}
-      </View>
-      {showThumb ? <VfsImageThumb path={entry.input.path as string} /> : null}
-      {expanded ? (
-        <View style={styles.toolBody}>
-          <Text style={styles.toolLabel}>input</Text>
-          <Text style={styles.toolDetail}>{safeJson(entry.input)}</Text>
-          {entry.result ? (
-            <>
-              <Text style={styles.toolLabel}>result</Text>
-              <Text style={styles.toolDetail}>{entry.result.text}</Text>
-            </>
-          ) : null}
-        </View>
-      ) : null}
-    </Pressable>
-  );
-}
-
-function VfsImageThumb({ path }: { path: string }) {
-  const [uri, setUri] = React.useState<string | null>(null);
-  React.useEffect(() => {
-    let alive = true;
-    readFile(path).then((c) => {
-      if (alive && c?.startsWith('data:image/')) setUri(c);
-    });
-    return () => {
-      alive = false;
-    };
-  }, [path]);
-  if (!uri) return null;
-  return <Image source={{ uri }} style={styles.toolThumb} resizeMode="cover" />;
-}
 
 function formatRenderErrorPrompt(err: RenderError): string {
   const label = err.stage === 'runtime' ? 'crashed at runtime' : `failed during ${err.stage}`;
@@ -841,70 +652,16 @@ function formatRenderErrorPrompt(err: RenderError): string {
   return `The app ${label} in ${err.path}:\n\n${err.message}${stackBlock}\n\nPlease read ${err.path} and fix it so the app loads.`;
 }
 
-function safeJson(v: unknown): string {
-  try {
-    return JSON.stringify(v, null, 2);
-  } catch {
-    return String(v);
-  }
-}
-
-function formatToolSummary(name: string, input: Record<string, unknown>): string {
-  switch (name) {
-    case 'read_file':
-      return `read_file(${stringOr(input.path, '?')})`;
-    case 'write_file': {
-      const content = typeof input.content === 'string' ? input.content : '';
-      return `write_file(${stringOr(input.path, '?')}, ${content.length} chars)`;
-    }
-    case 'edit_file': {
-      const oldLen = typeof input.old_string === 'string' ? input.old_string.length : 0;
-      const newLen = typeof input.new_string === 'string' ? input.new_string.length : 0;
-      return `edit_file(${stringOr(input.path, '?')}, ${oldLen} → ${newLen} chars)`;
-    }
-    case 'list_files':
-      return 'list_files()';
-    case 'delete_file':
-      return `delete_file(${stringOr(input.path, '?')})`;
-    case 'generate_image':
-      return `generate_image(${stringOr(input.path, '?')})`;
-    default:
-      return `${name}(${safeJson(input)})`;
-  }
-}
-
 function findLastIndex<T>(arr: T[], pred: (v: T) => boolean): number {
   for (let i = arr.length - 1; i >= 0; i--) if (pred(arr[i])) return i;
   return -1;
 }
 
-function stringOr(v: unknown, fallback: string): string {
-  return typeof v === 'string' ? v : fallback;
-}
-
-function iconFor(name: string): string {
-  switch (name) {
-    case 'read_file':
-      return '📖';
-    case 'write_file':
-      return '＋';
-    case 'edit_file':
-      return '✎';
-    case 'list_files':
-      return '⧉';
-    case 'delete_file':
-      return '🗑';
-    case 'generate_image':
-      return '🖼';
-    default:
-      return '•';
-  }
-}
-
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: '#0b0b0f' },
-  loading: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#0b0b0f' },
+  root: { flex: 1, backgroundColor: colors.slate },
+  loading: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.slate },
   appLayer: { flex: 1 },
+  pressed: { opacity: 0.7 },
   floatingBadge: {
     // Positioned so the 26px icon centered inside this 44px badge lines
     // up with the 26px chat-header icon at paddingHorizontal:16,
@@ -927,296 +684,188 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255,255,255,0.08)',
   },
   floatingBadgeIcon: { width: 26, height: 26, borderRadius: 6 },
-  chatOverlay: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: '#0b0b0f',
-  },
-  settingsOverlay: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: '#0b0b0f',
-  },
+  chatOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: colors.slate },
+  fullOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: colors.slate },
+
   chatHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-    paddingHorizontal: 16,
-    paddingTop: Platform.OS === 'ios' ? 48 : 32,
-    paddingBottom: 10,
-    backgroundColor: '#0b0b0f',
-    borderBottomWidth: 1,
-    borderBottomColor: '#1f2937',
-  },
-  chatHeaderBadge: { flexShrink: 0 },
-  chatHeaderIcon: { width: 26, height: 26, borderRadius: 6 },
-  projectTitleBtn: {
-    flexShrink: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingVertical: 4,
-    paddingHorizontal: 8,
-    borderRadius: 8,
-    backgroundColor: '#111827',
-  },
-  projectTitle: { color: '#fff', fontSize: 14, fontWeight: '600', maxWidth: 180 },
-  projectChevron: { color: '#9ca3af', fontSize: 12 },
-  chatHeaderActions: { flexDirection: 'row', gap: 16, marginLeft: 'auto' },
-  headerAction: { color: '#9ca3af', fontSize: 12 },
-  tabBar: {
-    flexDirection: 'row',
-    backgroundColor: '#0b0b0f',
-    borderBottomWidth: 1,
-    borderBottomColor: '#1f2937',
-  },
-  tabBtn: {
-    paddingVertical: 12,
-    paddingHorizontal: 18,
-    borderBottomWidth: 2,
-    borderBottomColor: 'transparent',
-    marginBottom: -1,
-  },
-  tabBtnActive: { borderBottomColor: '#fff' },
-  tabBtnText: {
-    color: '#6b7280',
-    fontSize: 13,
-    fontWeight: '600',
-    letterSpacing: 0.3,
-  },
-  tabBtnTextActive: { color: '#fff' },
-  errorBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    backgroundColor: '#3b0d10',
-    borderBottomWidth: 1,
-    borderBottomColor: '#7f1d1d',
-  },
-  errorBannerText: { flex: 1 },
-  errorBannerTitle: { color: '#fecaca', fontSize: 12, fontWeight: '700' },
-  errorBannerMsg: { color: '#fca5a5', fontSize: 11, marginTop: 2 },
-  errorBannerBtn: {
-    backgroundColor: '#d93025',
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 6,
-  },
-  errorBannerBtnDisabled: { opacity: 0.5 },
-  errorBannerBtnText: { color: '#fff', fontSize: 12, fontWeight: '700' },
-  messages: { padding: 12, gap: 8, flexGrow: 1 },
-  hint: {
-    color: '#6b7280',
-    fontSize: 13,
-    fontStyle: 'italic',
-    textAlign: 'center',
-    marginTop: 24,
-    paddingHorizontal: 16,
-    lineHeight: 20,
-  },
-  bubble: {
-    maxWidth: '88%',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 12,
-  },
-  bubbleUser: {
-    backgroundColor: '#2563eb',
-    alignSelf: 'flex-end',
-    borderBottomRightRadius: 4,
-  },
-  bubbleAssistant: {
-    backgroundColor: '#1f2937',
-    alignSelf: 'flex-start',
-    borderBottomLeftRadius: 4,
-  },
-  bubbleError: {
-    backgroundColor: '#7f1d1d',
-    alignSelf: 'flex-start',
-    borderBottomLeftRadius: 4,
-  },
-  bubbleTextUser: { color: '#fff', fontSize: 14, lineHeight: 20 },
-  bubbleTextAssistant: { color: '#e5e7eb', fontSize: 14, lineHeight: 20 },
-  bubbleTextError: { color: '#fecaca', fontSize: 13, lineHeight: 18 },
-  toolCard: {
-    alignSelf: 'stretch',
-    backgroundColor: '#111827',
-    borderColor: '#1f2937',
-    borderWidth: 1,
-    borderRadius: 10,
-    paddingVertical: 8,
-    paddingHorizontal: 10,
-  },
-  serverToolCard: {
-    alignSelf: 'stretch',
-    backgroundColor: '#0b1b2b',
-    borderColor: '#1e3a5f',
-    borderWidth: 1,
-    borderRadius: 10,
-    paddingVertical: 8,
-    paddingHorizontal: 10,
-  },
-  serverToolIcon: { width: 16, textAlign: 'center' },
-  searchTitle: { color: '#e5e7eb', fontSize: 12, fontWeight: '600' },
-  searchUrl: {
-    color: '#60a5fa',
-    fontSize: 11,
-    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-  },
-  toolHeader: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  toolIcon: { fontSize: 14, color: '#9ca3af', width: 16, textAlign: 'center' },
-  toolSummary: {
-    flex: 1,
-    color: '#d1d5db',
-    fontSize: 12,
-    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-  },
-  toolStatus: { fontSize: 13, fontWeight: '700' },
-  toolOk: { color: '#10b981' },
-  toolErr: { color: '#ef4444' },
-  toolBody: { marginTop: 8, gap: 4 },
-  toolThumb: { width: 120, height: 120, borderRadius: 8, marginTop: 8 },
-  toolLabel: { color: '#6b7280', fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5 },
-  toolDetail: {
-    color: '#9ca3af',
-    fontSize: 11,
-    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-  },
-  statusRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 4 },
-  statusText: { color: '#6b7280', fontSize: 12 },
-  inputRow: {
-    flexDirection: 'row',
     gap: 8,
-    padding: 10,
+    paddingTop: 8,
+    paddingBottom: 8,
+    paddingLeft: space.chatGutter,
+    paddingRight: 12,
+  },
+  logoBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: radii.button,
+    borderWidth: 1,
+    borderColor: colors.lineStrong,
+    backgroundColor: colors.board,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  titleBtn: {
+    flex: 1,
+    minWidth: 0,
+    height: 44,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 8,
+  },
+  projectTitle: {
+    flexShrink: 1,
+    fontFamily: fonts.displaySemi,
+    fontSize: 19,
+    letterSpacing: -0.2,
+    color: colors.chalk,
+  },
+  iconBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: radii.button,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  segmentWrap: { paddingHorizontal: space.chatGutter, paddingTop: 4, paddingBottom: 12 },
+  segment: {
+    flexDirection: 'row',
+    gap: 4,
+    padding: 4,
+    borderRadius: radii.input,
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.board,
+  },
+  segmentBtn: {
+    flex: 1,
+    height: 36,
+    borderRadius: 9,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  segmentBtnActive: { backgroundColor: colors.line },
+  segmentText: { fontFamily: fonts.bodyMedium, fontSize: 14, color: colors.dust },
+  segmentTextActive: { fontFamily: fonts.bodySemi, color: colors.chalk },
+
+  crash: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginHorizontal: space.chatGutter,
+    marginBottom: 8,
+    paddingVertical: 12,
+    paddingLeft: 14,
+    paddingRight: 12,
+    borderRadius: radii.button,
+    borderWidth: 1,
+    borderColor: colors.dangerBorder,
+    backgroundColor: colors.dangerBg,
+  },
+  crashText: { flex: 1, minWidth: 0, gap: 2 },
+  crashTitle: { fontFamily: fonts.bodySemi, fontSize: 13, color: colors.danger },
+  crashMsg: { fontFamily: fonts.mono, fontSize: 11, color: colors.dangerSoft },
+  fixBtn: {
+    height: 36,
+    paddingHorizontal: 14,
+    borderRadius: radii.chip,
+    backgroundColor: colors.accent,
+    justifyContent: 'center',
+  },
+  fixBtnText: { fontFamily: fonts.bodySemi, fontSize: 13, color: colors.slate },
+
+  messages: {
+    flexGrow: 1,
+    gap: 12,
+    paddingHorizontal: space.chatGutter,
+    paddingTop: 8,
+    paddingBottom: 16,
+  },
+  empty: { flex: 1, justifyContent: 'center', gap: 8, paddingHorizontal: 12, paddingBottom: 40 },
+  emptyTitle: {
+    fontFamily: fonts.displaySemi,
+    fontSize: 20,
+    letterSpacing: -0.2,
+    textAlign: 'center',
+    color: colors.chalk,
+  },
+  emptyBody: {
+    fontFamily: fonts.body,
+    fontSize: 14,
+    lineHeight: 21,
+    textAlign: 'center',
+    color: colors.dust,
+  },
+  userBubble: {
+    alignSelf: 'flex-end',
+    maxWidth: '80%',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderTopLeftRadius: 18,
+    borderTopRightRadius: 18,
+    borderBottomRightRadius: 6,
+    borderBottomLeftRadius: 18,
+    backgroundColor: colors.chalk,
+  },
+  userText: { fontFamily: fonts.body, fontSize: 15, lineHeight: 22, color: colors.slate },
+  assistant: { alignSelf: 'stretch' },
+  notice: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 2 },
+  noticeText: { fontFamily: fonts.mono, fontSize: 12, color: colors.dust },
+  errorCard: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    padding: 12,
+    borderRadius: radii.button,
+    borderWidth: 1,
+    borderColor: colors.dangerBorder,
+    backgroundColor: colors.dangerBg,
+  },
+  errorText: { flex: 1, fontFamily: fonts.body, fontSize: 14, lineHeight: 20, color: colors.danger },
+  thinking: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 4 },
+  thinkingText: { fontFamily: fonts.body, fontSize: 13, color: colors.dust },
+
+  composerWrap: {
+    paddingTop: 10,
+    paddingHorizontal: 12,
     borderTopWidth: 1,
-    borderTopColor: '#1f2937',
-    backgroundColor: '#0b0b0f',
+    borderTopColor: colors.line,
+    backgroundColor: colors.slate,
+  },
+  composer: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    gap: 8,
+    paddingVertical: 6,
+    paddingRight: 6,
+    paddingLeft: 16,
+    borderRadius: radii.composer,
+    borderWidth: 1,
+    borderColor: colors.lineStrong,
+    backgroundColor: colors.board,
   },
   input: {
     flex: 1,
-    backgroundColor: '#1a1a1f',
-    borderColor: '#2a2a30',
-    borderWidth: 1,
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    color: '#fff',
-    fontSize: 14,
-    maxHeight: 120,
+    minHeight: 44,
+    maxHeight: 140,
+    paddingTop: 12,
+    paddingBottom: 12,
+    color: colors.chalk,
+    fontFamily: fonts.body,
+    fontSize: 15,
+    lineHeight: 20,
   },
   sendBtn: {
-    backgroundColor: '#fff',
-    paddingHorizontal: 16,
-    borderRadius: 10,
+    width: 44,
+    height: 44,
+    borderRadius: 16,
+    backgroundColor: colors.accent,
+    alignItems: 'center',
     justifyContent: 'center',
-    alignItems: 'center',
-    minWidth: 64,
   },
-  sendBtnDisabled: { opacity: 0.3 },
-  sendBtnText: { color: '#0b0b0f', fontWeight: '700', fontSize: 13 },
-
-  sheetOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.55)',
-    justifyContent: 'center',
-    paddingHorizontal: 16,
-  },
-  sheet: {
-    backgroundColor: '#111827',
-    borderRadius: 14,
-    maxHeight: '80%',
-    overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: '#1f2937',
-  },
-  sheetTitle: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '700',
-    paddingHorizontal: 16,
-    paddingTop: 14,
-    paddingBottom: 10,
-  },
-  sheetList: { maxHeight: 360 },
-  projectRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderTopWidth: 1,
-    borderTopColor: '#1f2937',
-    gap: 10,
-  },
-  projectNameBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  projectName: { color: '#e5e7eb', fontSize: 14 },
-  projectNameCurrent: { color: '#fff', fontWeight: '700' },
-  currentMark: {
-    color: '#10b981',
-    fontSize: 10,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
-  renameInput: {
-    flex: 1,
-    backgroundColor: '#0b0b0f',
-    borderWidth: 1,
-    borderColor: '#2a2a30',
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    color: '#fff',
-    fontSize: 14,
-  },
-  projectActions: { flexDirection: 'row', gap: 10 },
-  actionText: { color: '#60a5fa', fontSize: 12 },
-  actionTextMuted: { color: '#9ca3af', fontSize: 12 },
-  actionTextDanger: { color: '#ef4444', fontSize: 12 },
-  sheetFooter: {
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderTopWidth: 1,
-    borderTopColor: '#1f2937',
-    backgroundColor: '#0b0b0f',
-  },
-  addProjectBtn: {
-    paddingVertical: 8,
-    alignItems: 'center',
-    borderRadius: 8,
-    backgroundColor: '#1f2937',
-  },
-  addProjectText: { color: '#fff', fontSize: 13, fontWeight: '600' },
-  newRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  newInput: {
-    flex: 1,
-    backgroundColor: '#1a1a1f',
-    borderWidth: 1,
-    borderColor: '#2a2a30',
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    color: '#fff',
-    fontSize: 13,
-  },
-  newBtn: {
-    backgroundColor: '#fff',
-    paddingHorizontal: 12,
-    borderRadius: 8,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  newBtnDisabled: { opacity: 0.4 },
-  newBtnText: { color: '#0b0b0f', fontWeight: '700', fontSize: 12 },
+  sendBtnIdle: { backgroundColor: colors.raised },
+  stopSquare: { width: 12, height: 12, borderRadius: 3, backgroundColor: colors.slate },
 });

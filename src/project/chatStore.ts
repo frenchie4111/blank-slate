@@ -26,7 +26,9 @@ export type Entry =
   | { kind: 'assistant'; id: string; blockIndex: number; text: string }
   | ToolEntry
   | ServerToolEntry
-  | { kind: 'error'; id: string; text: string };
+  | { kind: 'error'; id: string; text: string }
+  // Neutral status line in the transcript, e.g. "Stopped".
+  | { kind: 'notice'; id: string; text: string };
 
 export type ChatSnapshot = {
   history: ChatMessage[];

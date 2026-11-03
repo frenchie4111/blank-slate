@@ -2,6 +2,7 @@ import React from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
+  Linking,
   Platform,
   Pressable,
   ScrollView,
@@ -10,19 +11,24 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { setApiKey } from '../storage/keyStore';
+import { colors, fonts, radii, type } from '../theme';
+import { LogoMark } from '../theme/LogoMark';
 
 type Props = { onDone: () => void };
 
 export function OnboardingScreen({ onDone }: Props) {
+  const insets = useSafeAreaInsets();
   const [key, setKey] = React.useState('');
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const [focused, setFocused] = React.useState(false);
 
   const submit = async () => {
     const trimmed = key.trim();
     if (!trimmed.startsWith('sk-or-')) {
-      setError('That does not look like an OpenRouter API key (expected "sk-or-...").');
+      setError('That does not look like an OpenRouter API key (expected "sk-or-…").');
       return;
     }
     setSaving(true);
@@ -42,78 +48,123 @@ export function OnboardingScreen({ onDone }: Props) {
       style={styles.root}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
-      <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
-        <Text style={styles.title}>Blank Slate</Text>
-        <Text style={styles.subtitle}>
-          An empty app. Paste your OpenRouter API key to start asking an AI to build things.
-          You can pick the model in Settings.
-        </Text>
+      <ScrollView
+        contentContainerStyle={[
+          styles.scroll,
+          { paddingTop: Math.max(insets.top, 20) + 52, paddingBottom: Math.max(insets.bottom, 16) + 24 },
+        ]}
+        keyboardShouldPersistTaps="handled"
+      >
+        <View style={styles.intro}>
+          <View style={styles.logoTile}>
+            <LogoMark size={30} />
+          </View>
+          <Text style={styles.title}>Build any app,{'\n'}right here.</Text>
+          <Text style={styles.subtitle}>
+            Describe what you want. Blank Slate writes the code on your phone and runs it the
+            moment it's ready.
+          </Text>
+        </View>
 
         <View style={styles.field}>
           <Text style={styles.label}>OpenRouter API key</Text>
           <TextInput
             value={key}
-            onChangeText={setKey}
-            placeholder="sk-or-..."
-            placeholderTextColor="#888"
+            onChangeText={(v) => {
+              setKey(v);
+              if (error) setError(null);
+            }}
+            placeholder="sk-or-…"
+            placeholderTextColor={colors.dust}
             autoCapitalize="none"
             autoCorrect={false}
             secureTextEntry
-            style={styles.input}
+            style={[styles.input, focused && styles.inputFocused, error && styles.inputError]}
             editable={!saving}
+            onFocus={() => setFocused(true)}
+            onBlur={() => setFocused(false)}
+            onSubmitEditing={submit}
+            returnKeyType="done"
+            accessibilityLabel="OpenRouter API key"
           />
+          {error ? (
+            <Text style={styles.error}>{error}</Text>
+          ) : (
+            <Text style={styles.help}>
+              Stored only on this device, in the secure keychain, and sent only to
+              openrouter.ai.{' '}
+              <Text
+                style={styles.link}
+                accessibilityRole="link"
+                onPress={() => Linking.openURL('https://openrouter.ai/keys').catch(() => {})}
+              >
+                Get a key
+              </Text>
+            </Text>
+          )}
         </View>
 
-        {error ? <Text style={styles.error}>{error}</Text> : null}
+        <View style={styles.spacer} />
 
         <Pressable
-          style={[styles.btn, saving && styles.btnDisabled]}
+          style={({ pressed }) => [styles.cta, (saving || pressed) && styles.ctaPressed]}
           onPress={submit}
           disabled={saving}
+          accessibilityRole="button"
         >
           {saving ? (
-            <ActivityIndicator color="#fff" />
+            <ActivityIndicator color={colors.slate} />
           ) : (
-            <Text style={styles.btnText}>Save key and continue</Text>
+            <Text style={styles.ctaText}>Save key and continue</Text>
           )}
         </Pressable>
-
-        <Text style={styles.note}>
-          Your key is stored locally on this device (Keychain / Keystore). It is never sent anywhere
-          except directly to openrouter.ai. Create one at openrouter.ai/keys.
-        </Text>
       </ScrollView>
     </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: '#0b0b0f' },
-  scroll: { padding: 24, paddingTop: 80, flexGrow: 1, gap: 20 },
-  title: { color: '#fff', fontSize: 36, fontWeight: '700', letterSpacing: -0.5 },
-  subtitle: { color: '#a3a3a3', fontSize: 15, lineHeight: 22 },
-  field: { gap: 8, marginTop: 12 },
-  label: { color: '#e5e5e5', fontSize: 13, fontWeight: '600' },
-  input: {
-    backgroundColor: '#1a1a1f',
-    borderColor: '#2a2a30',
+  root: { flex: 1, backgroundColor: colors.slate },
+  scroll: { flexGrow: 1, paddingHorizontal: 24, gap: 40 },
+  intro: { gap: 20 },
+  logoTile: {
+    width: 64,
+    height: 64,
+    borderRadius: radii.tile,
+    backgroundColor: colors.board,
     borderWidth: 1,
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    color: '#fff',
-    fontSize: 14,
-    fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }),
-  },
-  error: { color: '#f87171', fontSize: 13 },
-  btn: {
-    backgroundColor: '#fff',
-    paddingVertical: 14,
-    borderRadius: 10,
+    borderColor: colors.lineStrong,
     alignItems: 'center',
-    marginTop: 4,
+    justifyContent: 'center',
   },
-  btnDisabled: { opacity: 0.5 },
-  btnText: { color: '#0b0b0f', fontWeight: '700', fontSize: 15 },
-  note: { color: '#6b7280', fontSize: 12, lineHeight: 18, marginTop: 8 },
+  title: { ...type.display, color: colors.chalk },
+  subtitle: { fontFamily: fonts.body, fontSize: 16, lineHeight: 24, color: colors.chalkMuted },
+  field: { gap: 10 },
+  label: { ...type.labelStrong, color: colors.chalk },
+  input: {
+    height: 52,
+    paddingHorizontal: 16,
+    borderRadius: radii.button,
+    borderWidth: 1,
+    borderColor: colors.lineStrong,
+    backgroundColor: colors.board,
+    color: colors.chalk,
+    fontFamily: fonts.mono,
+    fontSize: 14,
+  },
+  inputFocused: { borderColor: colors.dust },
+  inputError: { borderColor: colors.dangerBorder },
+  help: { fontFamily: fonts.body, fontSize: 13, lineHeight: 20, color: colors.dust },
+  link: { color: colors.accent, fontFamily: fonts.bodyMedium },
+  error: { fontFamily: fonts.body, fontSize: 13, lineHeight: 20, color: colors.danger },
+  spacer: { flexGrow: 1 },
+  cta: {
+    height: 54,
+    borderRadius: radii.button,
+    backgroundColor: colors.accent,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  ctaPressed: { opacity: 0.85 },
+  ctaText: { fontFamily: fonts.bodySemi, fontSize: 16, color: colors.slate },
 });

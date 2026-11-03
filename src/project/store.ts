@@ -1,11 +1,18 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { defaultTint, type Glyph, type Tint } from './appearance';
 
 export type Project = {
   id: string;
   name: string;
   createdAt: number;
   updatedAt: number;
+  // Home-screen tile look. Optional: older projects fall back to
+  // appearanceOf() defaults.
+  tint?: Tint;
+  glyph?: Glyph;
 };
+
+export type ProjectAppearance = { tint?: Tint; glyph?: Glyph };
 
 const PROJECTS_INDEX_KEY = 'projects:index';
 const CURRENT_PROJECT_KEY = 'projects:current';
@@ -200,13 +207,23 @@ export async function list(): Promise<Project[]> {
   return loadProjects();
 }
 
-export async function create(rawName: string): Promise<Project> {
+export async function create(
+  rawName: string,
+  appearance: ProjectAppearance = {},
+): Promise<Project> {
   const projects = await loadProjects();
   const id = newId();
   const now = Date.now();
   const name = rawName.trim() || `Untitled ${projects.length + 1}`;
   await writeProjectFile(id, 'App.tsx', STARTER_APP);
-  const project: Project = { id, name, createdAt: now, updatedAt: now };
+  const project: Project = {
+    id,
+    name,
+    createdAt: now,
+    updatedAt: now,
+    tint: appearance.tint ?? defaultTint(id),
+    ...(appearance.glyph ? { glyph: appearance.glyph } : {}),
+  };
   await saveProjects([...projects, project]);
   emit();
   return project;
@@ -258,5 +275,26 @@ export async function remove(id: string): Promise<void> {
     currentProjectId = remaining[0].id;
     await AsyncStorage.setItem(CURRENT_PROJECT_KEY, currentProjectId);
   }
+  emit();
+}
+
+export async function setAppearance(id: string, appearance: ProjectAppearance): Promise<void> {
+  const projects = await loadProjects();
+  const idx = projects.findIndex((p) => p.id === id);
+  if (idx < 0) throw new Error(`project ${id} not found`);
+  const next = projects.slice();
+  next[idx] = { ...next[idx], ...appearance };
+  await saveProjects(next);
+  emit();
+}
+
+// Bumps updatedAt so "Your apps" can show when a project was last worked on.
+export async function touch(id: string): Promise<void> {
+  const projects = await loadProjects();
+  const idx = projects.findIndex((p) => p.id === id);
+  if (idx < 0) return;
+  const next = projects.slice();
+  next[idx] = { ...next[idx], updatedAt: Date.now() };
+  await saveProjects(next);
   emit();
 }

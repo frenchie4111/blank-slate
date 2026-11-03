@@ -2,9 +2,8 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import { Lexer, type Token, type Tokens } from 'marked';
 import React from 'react';
-import { Linking, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-
-const MONO = Platform.OS === 'ios' ? 'Menlo' : 'monospace';
+import { Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { colors, fonts, noLigatures, radii } from '../theme';
 
 // Chat-sized markdown renderer on top of marked's lexer (pure JS, no native
 // code). Each top-level block is memoized on its raw source, so while a reply
@@ -178,9 +177,19 @@ function List({ list }: { list: Tokens.List }) {
     <View style={styles.list}>
       {list.items.map((item, i) => (
         <View key={i} style={styles.listItem}>
-          <Text style={[styles.text, styles.bullet]}>
-            {item.task ? (item.checked ? '☑' : '☐') : list.ordered ? `${start + i}.` : '•'}
-          </Text>
+          {item.task ? (
+            <View style={styles.taskBox}>
+              <Ionicons
+                name={item.checked ? 'checkbox-outline' : 'square-outline'}
+                size={15}
+                color={item.checked ? colors.success : colors.dust}
+              />
+            </View>
+          ) : (
+            <Text style={[styles.text, styles.bullet]}>
+              {list.ordered ? `${start + i}.` : '•'}
+            </Text>
+          )}
           <View style={styles.listBody}>{renderBlocks(item.tokens)}</View>
         </View>
       ))}
@@ -206,9 +215,9 @@ function CodeBlock({ code, lang }: { code: string; lang?: string }) {
           <Ionicons
             name={copied ? 'checkmark' : 'copy-outline'}
             size={12}
-            color={copied ? '#4ade80' : '#9ca3af'}
+            color={copied ? colors.success : colors.dust}
           />
-          <Text style={styles.copyText}>{copied ? 'copied' : 'copy'}</Text>
+          <Text style={styles.copyText}>{copied ? 'Copied' : 'Copy'}</Text>
         </Pressable>
       </View>
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.codeScroll}>
@@ -238,61 +247,68 @@ function Table({ table }: { table: Tokens.Table }) {
   );
 }
 
+// Assistant replies sit on the slate with no bubble: chalkMuted body copy,
+// chalk for emphasis, mono on `raised` for code.
 const styles = StyleSheet.create({
-  root: { gap: 6 },
-  text: { color: '#e5e7eb', fontSize: 14, lineHeight: 20 },
-  heading: { fontWeight: '700', color: '#f9fafb', marginTop: 2 },
-  headingLarge: { fontSize: 15, lineHeight: 21 },
-  bold: { fontWeight: '700', color: '#f9fafb' },
+  root: { gap: 10 },
+  text: { fontFamily: fonts.body, fontSize: 15, lineHeight: 23, color: colors.chalkMuted },
+  heading: { fontFamily: fonts.displaySemi, color: colors.chalk, marginTop: 4 },
+  headingLarge: { fontSize: 18, lineHeight: 24, letterSpacing: -0.2 },
+  bold: { fontFamily: fonts.bodySemi, color: colors.chalk },
   italic: { fontStyle: 'italic' },
   strike: { textDecorationLine: 'line-through' },
-  link: { color: '#93c5fd', textDecorationLine: 'underline' },
+  link: { color: colors.chalk, textDecorationLine: 'underline' },
   inlineCode: {
-    fontFamily: MONO,
-    fontSize: 12.5,
-    color: '#fcd34d',
-    backgroundColor: '#111827',
+    ...noLigatures,
+    fontFamily: fonts.mono,
+    fontSize: 13,
+    color: colors.chalk,
+    backgroundColor: colors.raised,
   },
   quote: {
-    borderLeftWidth: 3,
-    borderLeftColor: '#4b5563',
-    paddingLeft: 8,
-    gap: 4,
+    borderLeftWidth: 2,
+    borderLeftColor: colors.lineStrong,
+    paddingLeft: 12,
+    gap: 6,
   },
-  hr: { height: StyleSheet.hairlineWidth, backgroundColor: '#4b5563', marginVertical: 2 },
-  list: { gap: 2 },
+  hr: { height: 1, backgroundColor: colors.line, marginVertical: 4 },
+  list: { gap: 4 },
   listItem: { flexDirection: 'row' },
-  bullet: { minWidth: 16, paddingRight: 4, color: '#9ca3af' },
-  listBody: { flex: 1, flexShrink: 1, gap: 4 },
+  bullet: { minWidth: 18, paddingRight: 4, color: colors.dust },
+  taskBox: { minWidth: 22, paddingTop: 4 },
+  listBody: { flex: 1, flexShrink: 1, gap: 6 },
   codeBlock: {
-    backgroundColor: '#0b1220',
-    borderRadius: 6,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#374151',
+    backgroundColor: colors.board,
+    borderRadius: radii.input,
+    borderWidth: 1,
+    borderColor: colors.line,
     overflow: 'hidden',
   },
   codeHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 8,
-    paddingTop: 4,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.line,
   },
-  codeLang: { color: '#6b7280', fontSize: 11, fontFamily: MONO },
-  copyBtn: { flexDirection: 'row', alignItems: 'center', gap: 3 },
-  copyText: { color: '#9ca3af', fontSize: 11 },
-  codeScroll: { paddingHorizontal: 8, paddingTop: 2, paddingBottom: 8 },
-  codeText: { color: '#e5e7eb', fontFamily: MONO, fontSize: 12, lineHeight: 17 },
+  codeLang: { fontFamily: fonts.mono, fontSize: 11, color: colors.dust },
+  copyBtn: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  copyText: { fontFamily: fonts.bodyMedium, fontSize: 12, color: colors.dust },
+  codeScroll: { paddingHorizontal: 12, paddingVertical: 10 },
+  codeText: { ...noLigatures, fontFamily: fonts.mono, fontSize: 12, lineHeight: 18, color: colors.chalkSoft },
   table: {
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#4b5563',
-    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: colors.line,
+    borderRadius: radii.chip,
+    overflow: 'hidden',
   },
   tableRow: {
     flexDirection: 'row',
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: '#4b5563',
+    borderTopWidth: 1,
+    borderTopColor: colors.line,
   },
-  tableHeaderRow: { borderTopWidth: 0, backgroundColor: '#111827' },
-  tableCell: { width: 120, paddingHorizontal: 6, paddingVertical: 3 },
+  tableHeaderRow: { borderTopWidth: 0, backgroundColor: colors.board },
+  tableCell: { width: 130, paddingHorizontal: 10, paddingVertical: 6 },
 });
