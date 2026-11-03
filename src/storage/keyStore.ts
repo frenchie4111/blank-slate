@@ -7,6 +7,7 @@ const API_KEY = 'blank-slate.openrouter-key';
 // Left behind by builds that talked to Anthropic directly. Deleted on reset.
 const LEGACY_ANTHROPIC_KEY = 'blank-slate.anthropic-key';
 const MODEL_KEY = 'blank-slate.model';
+const AUTO_ICONS_KEY = 'blank-slate.auto-app-icons';
 
 const useSecure = Platform.OS === 'ios' || Platform.OS === 'android';
 
@@ -42,4 +43,13 @@ export async function getModel(): Promise<string> {
 
 export async function setModel(model: string): Promise<void> {
   await AsyncStorage.setItem(MODEL_KEY, model.trim());
+}
+
+// On by default: the agent makes an icon (~$0.035) for each new app it builds.
+export async function getAutoAppIcons(): Promise<boolean> {
+  return (await AsyncStorage.getItem(AUTO_ICONS_KEY)) !== 'off';
+}
+
+export async function setAutoAppIcons(on: boolean): Promise<void> {
+  await AsyncStorage.setItem(AUTO_ICONS_KEY, on ? 'on' : 'off');
 }

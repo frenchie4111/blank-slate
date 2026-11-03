@@ -1,4 +1,5 @@
-import { deleteFile, isImagePath, listFiles, readFile, writeFile } from '../vfs/vfs';
+import { getCurrentProjectIdSync, setIcon } from '../project/store';
+import { deleteFile, isImagePath, listFiles, normalizePath, readFile, writeFile } from '../vfs/vfs';
 import { IMAGE_MODEL } from './models';
 import { generateImage } from './openrouter';
 
@@ -85,6 +86,18 @@ const FUNCTION_TOOLS: FunctionTool[] = [
     },
   },
   {
+    name: 'set_app_icon',
+    description:
+      'Use an image already in the project (usually one you just made with generate_image) as this app\'s icon in Blank Slate\'s project list and header. Regenerating the same path later updates the icon automatically, so you only need to call this once per path.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Path of an existing image file, e.g. "assets/icon.png".' },
+      },
+      required: ['path'],
+    },
+  },
+  {
     name: 'list_files',
     description: 'List every path currently in the virtual filesystem.',
     parameters: { type: 'object', properties: {} },
@@ -140,6 +153,21 @@ export async function executeTool(
           ok: true,
           text: `Saved image to ${path} (${Math.round(dataUrl.length / 1024)} KB${costNote}). Import it with a relative path and pass it to <Image source={...} />.`,
         };
+      }
+      case 'set_app_icon': {
+        const path = normalizePath(requireString(input, 'path'));
+        if (!isImagePath(path)) {
+          return { ok: false, text: `${path} is not an image path (.png, .jpg, .jpeg, .webp or .gif).` };
+        }
+        const content = await readFile(path);
+        if (content === null) {
+          return { ok: false, text: `File not found: ${path}. Create it with generate_image first.` };
+        }
+        if (!content.startsWith('data:image/')) {
+          return { ok: false, text: `${path} does not contain image data. Regenerate it with generate_image.` };
+        }
+        await setIcon(getCurrentProjectIdSync(), path);
+        return { ok: true, text: `App icon set to ${path}.` };
       }
       case 'write_file': {
         const path = requireString(input, 'path');

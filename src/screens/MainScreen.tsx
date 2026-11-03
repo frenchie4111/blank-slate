@@ -26,7 +26,7 @@ import {
 } from '../project/chatStore';
 import * as projectStore from '../project/store';
 import type { Project } from '../project/store';
-import { getModel } from '../storage/keyStore';
+import { getAutoAppIcons, getModel } from '../storage/keyStore';
 import { colors, fonts, radii, space } from '../theme';
 import { LogoMark } from '../theme/LogoMark';
 import * as vfs from '../vfs/vfs';
@@ -44,6 +44,7 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
   const [entries, setEntries] = React.useState<Entry[]>([]);
   const [input, setInput] = React.useState('');
   const [running, setRunning] = React.useState(false);
+  const [reasoningTokens, setReasoningTokens] = React.useState(0);
   const [ready, setReady] = React.useState(false);
   const [chatVisible, setChatVisible] = React.useState(false);
   const [settingsVisible, setSettingsVisible] = React.useState(false);
@@ -206,6 +207,8 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
         copy[idx] = { ...existing, result: ev.result };
         return copy;
       });
+    } else if (ev.type === 'reasoning') {
+      setReasoningTokens(ev.tokens);
     } else if (ev.type === 'error') {
       setEntries((prev) => [
         ...prev,
@@ -222,10 +225,10 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
       const projectAtStart = activeProjectRef.current;
       const priorHistory = historyRef.current;
       try {
-        const model = await getModel();
+        const [model, autoAppIcons] = await Promise.all([getModel(), getAutoAppIcons()]);
         if (stoppedRef.current) throw new Error('Aborted');
         const run = runAgentTurn(
-          { apiKey, model, sessionId: `blank-slate:${projectAtStart ?? 'default'}` },
+          { apiKey, model, sessionId: `blank-slate:${projectAtStart ?? 'default'}`, autoAppIcons },
           priorHistory,
           text,
           handleEvent,
@@ -262,6 +265,7 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
         }
       } finally {
         setRunning(false);
+        setReasoningTokens(0);
         runRef.current = null;
       }
     },
@@ -458,6 +462,7 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
                 <ChatLog
                   entries={entries}
                   running={running}
+                  reasoningTokens={reasoningTokens}
                   scrollRef={scrollRef}
                 />
 
@@ -569,18 +574,23 @@ function SegmentButton({
 function ChatLog({
   entries,
   running,
+  reasoningTokens,
   scrollRef,
 }: {
   entries: Entry[];
   running: boolean;
+  reasoningTokens: number;
   scrollRef: React.RefObject<ScrollView | null>;
 }) {
   const items = React.useMemo(() => buildRenderItems(entries, running), [entries, running]);
   const last = items[items.length - 1];
   // A live tool group shows its own spinner; otherwise show "Thinking" until
-  // the reply's first text arrives.
+  // the reply's first text arrives. Long reasoning gets a row (with a count)
+  // even under a live tool group, so it never looks hung.
   const thinking =
-    running && !(last?.type === 'tools' && last.active) && !isStreamingText(last);
+    running &&
+    !isStreamingText(last) &&
+    (!(last?.type === 'tools' && last.active) || reasoningTokens >= 200);
   // Follow new output only while the reader is at the bottom, so expanding a
   // tool card further up doesn't yank the view away. Jumps (not animated
   // scrolls) keep onScroll from seeing mid-animation offsets.
@@ -616,11 +626,17 @@ function ChatLog({
       {thinking ? (
         <View style={styles.thinking}>
           <ActivityIndicator size="small" color={colors.dust} />
-          <Text style={styles.thinkingText}>Thinking…</Text>
+          <Text style={styles.thinkingText}>
+            {reasoningTokens >= 200 ? `Thinking… ${formatTokens(reasoningTokens)} tokens` : 'Thinking…'}
+          </Text>
         </View>
       ) : null}
     </ScrollView>
   );
+}
+
+function formatTokens(n: number): string {
+  return n < 1000 ? String(n) : `${(n / 1000).toFixed(1)}k`;
 }
 
 function isStreamingText(item: RenderItem | undefined): boolean {

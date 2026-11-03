@@ -249,6 +249,17 @@ function describe(e: ToolLike, known: Map<string, number>): ToolStep {
         detail: failed ?? (ok ? 'image' : null),
         thumbPath: ok ? path : null,
       };
+    case 'set_app_icon':
+      return {
+        ...base,
+        key: 'other',
+        icon: 'apps-outline',
+        label: 'Set app icon',
+        doing: 'Setting app icon',
+        status,
+        resultText,
+        detail: failed ?? (ok ? path : null),
+      };
     default:
       return {
         ...base,

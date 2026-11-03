@@ -1,7 +1,9 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { fileKeyFor, getCurrentProjectIdSync, indexKeyFor } from '../project/store';
 
-type Listener = (change: { type: 'write' | 'delete'; path: string }) => void;
+export type VfsChange = { type: 'write' | 'delete'; path: string; projectId: string };
+
+type Listener = (change: VfsChange) => void;
 
 const listeners = new Set<Listener>();
 
@@ -14,7 +16,7 @@ export function isImagePath(path: string): boolean {
   return IMAGE_EXTS.some((e) => lower.endsWith(e));
 }
 
-function normalizePath(raw: string): string {
+export function normalizePath(raw: string): string {
   let p = raw.trim();
   while (p.startsWith('./')) p = p.slice(2);
   while (p.startsWith('/')) p = p.slice(1);
@@ -56,8 +58,9 @@ export async function writeFile(path: string, content: string): Promise<void> {
     idx.push(p);
     await saveIndex(idx);
   }
-  await AsyncStorage.setItem(fileKeyFor(getCurrentProjectIdSync(), p), content);
-  emit({ type: 'write', path: p });
+  const projectId = getCurrentProjectIdSync();
+  await AsyncStorage.setItem(fileKeyFor(projectId, p), content);
+  emit({ type: 'write', path: p, projectId });
 }
 
 export async function deleteFile(path: string): Promise<void> {
@@ -65,8 +68,9 @@ export async function deleteFile(path: string): Promise<void> {
   const idx = await loadIndex();
   const next = idx.filter((x) => x !== p);
   if (next.length !== idx.length) await saveIndex(next);
-  await AsyncStorage.removeItem(fileKeyFor(getCurrentProjectIdSync(), p));
-  emit({ type: 'delete', path: p });
+  const projectId = getCurrentProjectIdSync();
+  await AsyncStorage.removeItem(fileKeyFor(projectId, p));
+  emit({ type: 'delete', path: p, projectId });
 }
 
 export function subscribe(fn: Listener): () => void {
@@ -76,7 +80,7 @@ export function subscribe(fn: Listener): () => void {
   };
 }
 
-function emit(change: { type: 'write' | 'delete'; path: string }): void {
+function emit(change: VfsChange): void {
   for (const l of listeners) {
     try {
       l(change);

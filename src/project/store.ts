@@ -6,6 +6,10 @@ export type Project = {
   name: string;
   createdAt: number;
   updatedAt: number;
+  // VFS path of the image the agent picked as this app's icon (set_app_icon).
+  // Only the path lives here; the data URL stays in the project's VFS. Read it
+  // with getProjectIconUri / useProjectIcon from ./icon.
+  iconPath?: string;
   // Home-screen tile look. Optional: older projects fall back to
   // appearanceOf() defaults.
   tint?: Tint;
@@ -97,12 +101,18 @@ async function loadProjects(): Promise<Project[]> {
   try {
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter(
-      (p: unknown): p is Project =>
-        !!p &&
-        typeof (p as Project).id === 'string' &&
-        typeof (p as Project).name === 'string',
-    );
+    return parsed
+      .filter(
+        (p: unknown): p is Project =>
+          !!p &&
+          typeof (p as Project).id === 'string' &&
+          typeof (p as Project).name === 'string',
+      )
+      .map((p) => {
+        if (p.iconPath === undefined || typeof p.iconPath === 'string') return p;
+        const { iconPath: _drop, ...rest } = p;
+        return rest;
+      });
   } catch {
     return [];
   }
@@ -246,6 +256,23 @@ export async function rename(id: string, rawName: string): Promise<void> {
   if (idx < 0) throw new Error(`project ${id} not found`);
   const next = projects.slice();
   next[idx] = { ...next[idx], name, updatedAt: Date.now() };
+  await saveProjects(next);
+  emit();
+}
+
+export async function get(id: string): Promise<Project | null> {
+  return (await loadProjects()).find((p) => p.id === id) ?? null;
+}
+
+// Pass null to clear. The caller is responsible for checking the path points
+// at an image in this project's VFS.
+export async function setIcon(id: string, iconPath: string | null): Promise<void> {
+  const projects = await loadProjects();
+  const idx = projects.findIndex((p) => p.id === id);
+  if (idx < 0) throw new Error(`project ${id} not found`);
+  const next = projects.slice();
+  const { iconPath: _old, ...rest } = next[idx];
+  next[idx] = iconPath ? { ...rest, iconPath, updatedAt: Date.now() } : { ...rest, updatedAt: Date.now() };
   await saveProjects(next);
   emit();
 }

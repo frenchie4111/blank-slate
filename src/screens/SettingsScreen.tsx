@@ -8,13 +8,14 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MODEL_OPTIONS } from '../agent/models';
-import { getModel, setModel } from '../storage/keyStore';
+import { getAutoAppIcons, getModel, setAutoAppIcons, setModel } from '../storage/keyStore';
 import { colors, fonts, radii, type } from '../theme';
 
 type Props = {
@@ -80,6 +81,17 @@ export function SettingsScreen({ onBack, onResetKey, apiKey }: Props) {
     if (!trimmed) return;
     setModelState(trimmed);
     await setModel(trimmed);
+  };
+
+  const [autoIcons, setAutoIconsState] = React.useState<boolean | null>(null);
+
+  React.useEffect(() => {
+    getAutoAppIcons().then(setAutoIconsState);
+  }, []);
+
+  const toggleAutoIcons = async (on: boolean) => {
+    setAutoIconsState(on);
+    await setAutoAppIcons(on);
   };
 
   const customIsActive = model !== null && !MODEL_OPTIONS.some((o) => o.id === model);
@@ -182,6 +194,24 @@ export function SettingsScreen({ onBack, onResetKey, apiKey }: Props) {
         <Text style={styles.hint}>
           Prices are USD per million input / output tokens. Browse more models at
           openrouter.ai/models. Takes effect on your next message.
+        </Text>
+
+        <Section title="Icons">
+          <View style={styles.row}>
+            <Text style={styles.rowLabel}>Auto-generate app icons</Text>
+            <Switch
+              value={autoIcons ?? true}
+              onValueChange={toggleAutoIcons}
+              disabled={autoIcons === null}
+              trackColor={{ false: colors.lineStrong, true: colors.success }}
+              thumbColor={colors.chalk}
+              accessibilityLabel="Auto-generate app icons"
+            />
+          </View>
+        </Section>
+        <Text style={styles.hint}>
+          The agent makes an icon for each new app (about $0.035 each). When off, it only
+          makes one if you ask.
         </Text>
 
         <Section title="App">

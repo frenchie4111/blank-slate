@@ -33,6 +33,9 @@ export type UrlCitation = { url: string; title: string; content?: string };
 export type StreamHandlers = {
   onText: (delta: string) => void;
   onCitation: (c: UrlCitation) => void;
+  // Characters of reasoning received so far in this response. Reasoning isn't
+  // shown, but without it a long think looks like a hang.
+  onReasoning?: (totalChars: number) => void;
 };
 
 export type Usage = {
@@ -46,6 +49,9 @@ export type StreamResult = {
   message: Extract<ChatMessage, { role: 'assistant' }>;
   finishReason: string | null;
   usage: Usage | null;
+  // Which upstream OpenRouter routed to; GLM in particular behaves very
+  // differently across providers.
+  provider: string | null;
 };
 
 type Delta = {
@@ -55,11 +61,13 @@ type Delta = {
     id?: string;
     function?: { name?: string; arguments?: string };
   }[];
+  reasoning?: string | null;
   reasoning_details?: unknown[];
   annotations?: { type: string; url_citation?: UrlCitation }[];
 };
 
 type Chunk = {
+  provider?: string;
   choices?: { delta?: Delta; finish_reason?: string | null }[];
   error?: { message?: string; code?: number | string };
   usage?: Usage;
@@ -86,7 +94,9 @@ export async function streamChatCompletion(
   let text = '';
   let finishReason: string | null = null;
   let usage: Usage | null = null;
+  let provider: string | null = null;
   const reasoningDetails: unknown[] = [];
+  let reasoningChars = 0;
   // Keyed by the delta's tool_call index. Server tools (web search/fetch) run
   // inside OpenRouter and consume indices without ever appearing here, so the
   // indices we see are not necessarily contiguous.
@@ -97,6 +107,7 @@ export async function streamChatCompletion(
       throw new Error(`OpenRouter: ${chunk.error.message ?? JSON.stringify(chunk.error)}`);
     }
     if (chunk.usage) usage = chunk.usage;
+    if (chunk.provider) provider = chunk.provider;
     const choice = chunk.choices?.[0];
     if (!choice) return;
     const delta = choice.delta ?? {};
@@ -115,6 +126,11 @@ export async function streamChatCompletion(
       if (tc.function?.arguments) call.function.arguments += tc.function.arguments;
     }
     if (delta.reasoning_details) reasoningDetails.push(...delta.reasoning_details);
+    const reasoningText = delta.reasoning ?? detailsText(delta.reasoning_details);
+    if (reasoningText) {
+      reasoningChars += reasoningText.length;
+      handlers.onReasoning?.(reasoningChars);
+    }
     for (const a of delta.annotations ?? []) {
       if (a.type === 'url_citation' && a.url_citation) handlers.onCitation(a.url_citation);
     }
@@ -146,6 +162,7 @@ export async function streamChatCompletion(
     },
     finishReason,
     usage,
+    provider,
   };
 }
 
@@ -182,6 +199,18 @@ export async function generateImage(
     throw new Error(`No image returned.${said}`);
   }
   return { dataUrl, cost: parsed.usage?.cost ?? null };
+}
+
+// Fallback for providers that only send structured reasoning_details.
+function detailsText(details: unknown[] | undefined): string {
+  if (!details) return '';
+  let out = '';
+  for (const d of details) {
+    const t = (d as { text?: unknown; summary?: unknown }) ?? {};
+    if (typeof t.text === 'string') out += t.text;
+    else if (typeof t.summary === 'string') out += t.summary;
+  }
+  return out;
 }
 
 function headersFor(apiKey: string): Record<string, string> {

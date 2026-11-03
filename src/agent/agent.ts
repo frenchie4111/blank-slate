@@ -1,8 +1,11 @@
 import { streamChatCompletion, type ChatMessage, type ToolCall } from './openrouter';
 import { executeTool, SERVER_TOOL_DEFINITIONS, TOOL_DEFINITIONS } from './tools';
-import { SYSTEM_PROMPT } from './systemPrompt';
+import { systemPromptFor } from './systemPrompt';
 
 const MAX_TOKENS = 16384;
+// Reasoning models (GLM 5.3 especially) can spend the whole output budget
+// thinking and never call a tool. Capping reasoning at half leaves room to act.
+const REASONING_BUDGET = 8192;
 const MAX_TURNS = 25;
 
 export type WebSearchHit = {
@@ -28,6 +31,9 @@ export type ServerToolName = 'web_search' | 'web_fetch' | 'web_sources';
 
 export type AgentEvent =
   | { type: 'text_delta'; delta: string; blockIndex: number }
+  // Approximate reasoning tokens so far in the current request; resets to 0
+  // when the next request starts.
+  | { type: 'reasoning'; tokens: number }
   | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown>; blockIndex: number }
   | { type: 'tool_result'; id: string; ok: boolean; text: string }
   | {
@@ -50,6 +56,8 @@ export type AgentConfig = {
   // turns — most providers (Z.AI, DeepSeek, Moonshot, OpenAI…) cache
   // automatically but only if consecutive requests hit the same endpoint.
   sessionId: string;
+  // Picks the system prompt variant with or without auto app icons.
+  autoAppIcons: boolean;
 };
 
 export type AgentRun = {
@@ -64,6 +72,7 @@ export function runAgentTurn(
   onEvent: (ev: AgentEvent) => void,
 ): AgentRun {
   const messages: ChatMessage[] = [...prior, { role: 'user', content: userText }];
+  const systemMessage = systemMessageFor(config.autoAppIcons);
   const controller = new AbortController();
   let aborted = false;
 
@@ -80,6 +89,9 @@ export function runAgentTurn(
       const sourcesId = `web-${turn}-${Date.now()}`;
       const sources = new Map<string, { title: string; url: string }>();
 
+      let lastReasoningTokens = 0;
+      onEvent({ type: 'reasoning', tokens: 0 });
+
       let streamed;
       try {
         streamed = await streamChatCompletion(
@@ -87,14 +99,22 @@ export function runAgentTurn(
           {
             model: config.model,
             max_tokens: MAX_TOKENS,
-            messages: [SYSTEM_MESSAGE, ...messages],
+            messages: [systemMessage, ...messages],
             tools: [...TOOL_DEFINITIONS, ...SERVER_TOOL_DEFINITIONS],
             session_id: config.sessionId.slice(0, 256),
             ...cacheOptions(config.model),
+            ...reasoningOptions(config.model),
           },
           controller.signal,
           {
             onText: (delta) => onEvent({ type: 'text_delta', delta, blockIndex: textBlock }),
+            onReasoning: (chars) => {
+              // ~4 chars per token; only re-render every 50 tokens or so.
+              const tokens = Math.round(chars / 4);
+              if (tokens - lastReasoningTokens < 50) return;
+              lastReasoningTokens = tokens;
+              onEvent({ type: 'reasoning', tokens });
+            },
             onCitation: (c) => {
               if (sources.has(c.url)) return;
               if (sources.size === 0) {
@@ -120,13 +140,13 @@ export function runAgentTurn(
         throw e;
       }
 
-      const { message, finishReason, usage } = streamed;
+      const { message, finishReason, usage, provider } = streamed;
       if (__DEV__ && usage) {
         const details = usage.prompt_tokens_details;
         console.log(
-          `[agent] ${config.model} prompt=${usage.prompt_tokens} cached=${details?.cached_tokens ?? 0} ` +
+          `[agent] ${config.model} via ${provider ?? '?'} prompt=${usage.prompt_tokens} cached=${details?.cached_tokens ?? 0} ` +
             `cache_write=${details?.cache_write_tokens ?? 0} completion=${usage.completion_tokens} ` +
-            `cost=$${usage.cost ?? '?'}`,
+            `cost=$${usage.cost ?? '?'} finish=${finishReason} text=${JSON.stringify((message.content ?? '').slice(0, 80))}`,
         );
       }
       messages.push(message);
@@ -134,7 +154,12 @@ export function runAgentTurn(
       blockOffset += 2 + toolCalls.length;
 
       if (finishReason === 'length' && toolCalls.length === 0) {
-        onEvent({ type: 'error', message: 'The model hit its output limit before finishing.' });
+        onEvent({
+          type: 'error',
+          message: message.content
+            ? 'The model hit its output limit before finishing.'
+            : 'The model used its whole output budget thinking and never got to act. Try again, or pick a different model in Settings.',
+        });
         return messages;
       }
       if (toolCalls.length === 0) {
@@ -190,14 +215,19 @@ export function runAgentTurn(
   };
 }
 
-// The system prompt and tool list are identical on every request, so they form
-// a stable cache prefix; history is append-only after them. The breakpoint on
+// The system prompt (one of two variants, by the auto-icon setting) and tool
+// list are identical from request to request, so they form a stable cache
+// prefix; history is append-only after them. The breakpoint on
 // the system block is what Anthropic, Gemini and Qwen need for explicit
 // caching; OpenRouter translates it for OpenAI and drops it elsewhere.
-const SYSTEM_MESSAGE = {
-  role: 'system' as const,
-  content: [{ type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }],
-};
+function systemMessageFor(autoAppIcons: boolean) {
+  return {
+    role: 'system' as const,
+    content: [
+      { type: 'text', text: systemPromptFor(autoAppIcons), cache_control: { type: 'ephemeral' } },
+    ],
+  };
+}
 
 function cacheOptions(model: string): Record<string, unknown> {
   // Claude also supports automatic caching: a top-level cache_control that
@@ -207,6 +237,13 @@ function cacheOptions(model: string): Record<string, unknown> {
     return { cache_control: { type: 'ephemeral' } };
   }
   return {};
+}
+
+function reasoningOptions(model: string): Record<string, unknown> {
+  // On Claude, reasoning.max_tokens would switch extended thinking on (more
+  // cost, different behavior), so leave Anthropic models alone.
+  if (model.startsWith('anthropic/') || model.startsWith('~anthropic/')) return {};
+  return { reasoning: { max_tokens: REASONING_BUDGET } };
 }
 
 function parseArguments(
