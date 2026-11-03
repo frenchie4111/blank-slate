@@ -1,4 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
+import * as Clipboard from 'expo-clipboard';
 import React from 'react';
 import {
   ActivityIndicator,
@@ -42,8 +43,20 @@ type Props = {
   entries: Entry[];
   running: boolean;
   reasoningTokens: number;
+  streaming: 'text' | 'call' | null;
   memory: React.RefObject<ChatScrollMemory>;
+  // Re-sends the latest request after a failed turn.
+  onRetry: () => void;
+  // Sends one of the empty chat's starter prompts.
+  onSuggest: (text: string) => void;
 };
+
+const STARTERS = [
+  'A habit tracker with a streak for each habit',
+  'A tip calculator that splits the bill',
+  'A packing list with categories and checkboxes',
+  'A focus timer with a progress ring',
+];
 
 // The chat log keeps an explicit anchored-to-bottom state. While anchored it
 // re-pins to the end on every content or viewport change (streaming text,
@@ -55,16 +68,26 @@ type Props = {
 // the growth is in the last item, which mVCP doesn't cover (it holds the first
 // visible item's position and its autoscroll threshold is for the top), and
 // react-native-web supports neither it nor inverted wheel scrolling well.
-export function ChatList({ entries, running, reasoningTokens, memory }: Props) {
+export function ChatList({
+  entries,
+  running,
+  reasoningTokens,
+  streaming,
+  memory,
+  onRetry,
+  onSuggest,
+}: Props) {
   const items = React.useMemo(() => buildRenderItems(entries, running), [entries, running]);
   const last = items[items.length - 1];
-  // A live tool group shows its own spinner; otherwise show "Thinking" until
-  // the reply's first text arrives. Long reasoning gets a row (with a count)
-  // even under a live tool group, so it never looks hung.
+  // A live tool group shows its own spinner; otherwise show a status row
+  // whenever no reply text is streaming in. Long reasoning gets a row (with a
+  // count) even under a live tool group, so it never looks hung.
   const thinking =
     running &&
-    !isStreamingText(last) &&
+    streaming !== 'text' &&
     (!(last?.type === 'tools' && last.active) || reasoningTokens >= 200);
+  // Only the latest turn's error can be retried.
+  const retryId = running ? null : latestErrorId(items);
 
   const scrollRef = React.useRef<ScrollView | null>(null);
   const anchoredRef = React.useRef(memory.current.anchored);
@@ -286,21 +309,39 @@ export function ChatList({ entries, running, reasoningTokens, memory }: Props) {
         {items.length === 0 ? (
           <View style={styles.empty}>
             <Text style={styles.emptyTitle}>What should this app become?</Text>
-            <Text style={styles.emptyBody}>
-              Try "a counter with a red increment button, and pull the button into
-              components/Button.tsx".
-            </Text>
+            <Text style={styles.emptyBody}>Describe it below, or start from one of these.</Text>
+            <View style={styles.starters}>
+              {STARTERS.map((s) => (
+                <Pressable
+                  key={s}
+                  onPress={() => onSuggest(s)}
+                  style={({ pressed }) => [styles.starter, pressed && styles.starterPressed]}
+                  accessibilityRole="button"
+                >
+                  <Text style={styles.starterText}>{s}</Text>
+                  <Ionicons name="arrow-up" size={15} color={colors.dust} />
+                </Pressable>
+              ))}
+            </View>
           </View>
         ) : (
-          items.map((item) => <ItemView key={item.id} item={item} />)
+          items.map((item) => (
+            <ItemView
+              key={item.id}
+              item={item}
+              onRetry={item.id === retryId ? onRetry : undefined}
+            />
+          ))
         )}
         {thinking ? (
           <View style={styles.thinking}>
             <ActivityIndicator size="small" color={colors.dust} />
             <Text style={styles.thinkingText}>
-              {reasoningTokens >= 200
-                ? `Thinking… ${formatTokens(reasoningTokens)} tokens`
-                : 'Thinking…'}
+              {streaming === 'call'
+                ? 'Writing…'
+                : reasoningTokens >= 200
+                  ? `Thinking… ${formatTokens(reasoningTokens)} tokens`
+                  : 'Thinking…'}
             </Text>
           </View>
         ) : null}
@@ -374,21 +415,38 @@ function formatTokens(n: number): string {
   return n < 1000 ? String(n) : `${(n / 1000).toFixed(1)}k`;
 }
 
-function isStreamingText(item: RenderItem | undefined): boolean {
-  return item?.type === 'entry' && item.entry.kind === 'assistant';
+function latestErrorId(items: RenderItem[]): string | null {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const it = items[i];
+    if (it.type !== 'entry') continue;
+    if (it.entry.kind === 'user') return null;
+    if (it.entry.kind === 'error') return it.id;
+  }
+  return null;
 }
 
-function ItemView({ item }: { item: RenderItem }) {
+function ItemView({ item, onRetry }: { item: RenderItem; onRetry?: () => void }) {
   if (item.type === 'tools') return <ToolGroupCard steps={item.steps} active={item.active} />;
-  return <EntryView entry={item.entry} />;
+  if (item.type === 'turnEnd') {
+    // Only a stop needs saying; the partial reply stays above it.
+    return item.entry.status === 'stopped' ? (
+      <View style={styles.notice}>
+        <Ionicons name="stop-circle-outline" size={14} color={colors.dust} />
+        <Text style={styles.noticeText}>Stopped</Text>
+      </View>
+    ) : null;
+  }
+  return <EntryView entry={item.entry} onRetry={onRetry} />;
 }
 
 // Memoized so a streaming chunk only re-renders the entry it touched —
 // handleEvent keeps object identity for every other entry.
 const EntryView = React.memo(function EntryView({
   entry,
+  onRetry,
 }: {
-  entry: Exclude<Entry, ToolEntry | ServerToolEntry>;
+  entry: Exclude<Entry, ToolEntry | ServerToolEntry | { kind: 'turnEnd' }>;
+  onRetry?: () => void;
 }) {
   if (entry.kind === 'user') {
     return (
@@ -397,14 +455,7 @@ const EntryView = React.memo(function EntryView({
       </View>
     );
   }
-  if (entry.kind === 'assistant') {
-    // Whitespace-only blocks are filtered out by buildRenderItems.
-    return (
-      <View style={styles.assistant}>
-        <Markdown text={entry.text.trim()} />
-      </View>
-    );
-  }
+  if (entry.kind === 'assistant') return <AssistantText text={entry.text} />;
   if (entry.kind === 'notice') {
     return (
       <View style={styles.notice}>
@@ -415,11 +466,60 @@ const EntryView = React.memo(function EntryView({
   }
   return (
     <View style={styles.errorCard}>
-      <Ionicons name="alert-circle-outline" size={16} color={colors.danger} />
-      <Text style={styles.errorText}>{entry.text}</Text>
+      <Ionicons name="alert-circle-outline" size={16} color={colors.danger} style={styles.errorIcon} />
+      <View style={styles.errorBody}>
+        <Text style={styles.errorTitle}>{errorTitle(entry.text)}</Text>
+        <Text style={styles.errorText}>{entry.text}</Text>
+      </View>
+      {onRetry ? (
+        <Pressable
+          onPress={onRetry}
+          style={({ pressed }) => [styles.retryBtn, pressed && styles.pressed]}
+          accessibilityRole="button"
+        >
+          <Ionicons name="refresh" size={14} color={colors.slate} />
+          <Text style={styles.retryText}>Retry</Text>
+        </Pressable>
+      ) : null}
     </View>
   );
 });
+
+// Long-press copies the message on native; on web the text is selectable.
+// No visible chrome until it's used.
+function AssistantText({ text }: { text: string }) {
+  const [copied, setCopied] = React.useState(false);
+  // Whitespace-only blocks are filtered out by buildRenderItems.
+  const body = <Markdown text={text.trim()} />;
+  if (Platform.OS === 'web') return <View style={styles.assistant}>{body}</View>;
+  const copy = () => {
+    Clipboard.setStringAsync(text.trim())
+      .then(() => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1200);
+      })
+      .catch(() => {});
+  };
+  return (
+    <Pressable
+      onLongPress={copy}
+      delayLongPress={400}
+      style={styles.assistant}
+      accessibilityHint="Long-press to copy"
+    >
+      {body}
+      {copied ? <Text style={styles.copiedText}>Copied</Text> : null}
+    </Pressable>
+  );
+}
+
+function errorTitle(message: string): string {
+  if (/output (limit|budget)/i.test(message)) return 'Reply cut off';
+  if (/OpenRouter (5\d\d|429)/.test(message)) return 'The model provider had a problem';
+  if (/OpenRouter 4\d\d/.test(message)) return 'OpenRouter rejected the request';
+  if (/network|fetch|timed? ?out|connection/i.test(message)) return 'Connection problem';
+  return "This turn didn't finish";
+}
 
 const styles = StyleSheet.create({
   wrap: { flex: 1 },
@@ -447,8 +547,25 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     color: colors.dust,
   },
+  starters: { gap: 8, marginTop: 12 },
+  starter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    minHeight: 48,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: radii.button,
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.board,
+  },
+  starterPressed: { backgroundColor: colors.raised },
+  starterText: { flex: 1, fontFamily: fonts.body, fontSize: 14, lineHeight: 20, color: colors.chalkSoft },
   userBubble: {
     alignSelf: 'flex-end',
+    // Extra air above each request separates one turn from the next.
+    marginTop: 8,
     maxWidth: '80%',
     paddingHorizontal: 14,
     paddingVertical: 12,
@@ -464,7 +581,7 @@ const styles = StyleSheet.create({
   noticeText: { fontFamily: fonts.mono, fontSize: 12, color: colors.dust },
   errorCard: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
+    alignItems: 'center',
     gap: 10,
     padding: 12,
     borderRadius: radii.button,
@@ -472,7 +589,21 @@ const styles = StyleSheet.create({
     borderColor: colors.dangerBorder,
     backgroundColor: colors.dangerBg,
   },
-  errorText: { flex: 1, fontFamily: fonts.body, fontSize: 14, lineHeight: 20, color: colors.danger },
+  errorIcon: { alignSelf: 'flex-start', marginTop: 1 },
+  errorBody: { flex: 1, minWidth: 0, gap: 2 },
+  errorTitle: { fontFamily: fonts.bodySemi, fontSize: 13, color: colors.danger },
+  errorText: { fontFamily: fonts.body, fontSize: 13, lineHeight: 19, color: colors.dangerSoft },
+  retryBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    height: 36,
+    paddingHorizontal: 14,
+    borderRadius: radii.chip,
+    backgroundColor: colors.accent,
+  },
+  retryText: { fontFamily: fonts.bodySemi, fontSize: 13, color: colors.slate },
+  copiedText: { marginTop: 6, fontFamily: fonts.bodyMedium, fontSize: 12, color: colors.success },
   thinking: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 4 },
   thinkingText: { fontFamily: fonts.body, fontSize: 13, color: colors.dust },
 

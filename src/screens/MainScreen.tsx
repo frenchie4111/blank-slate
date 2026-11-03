@@ -49,6 +49,9 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
   const [input, setInput] = React.useState('');
   const [running, setRunning] = React.useState(false);
   const [reasoningTokens, setReasoningTokens] = React.useState(0);
+  // What the in-flight request is streaming: reply text, or a tool call
+  // (whose arguments, often a whole file, show nothing until it's done).
+  const [streaming, setStreaming] = React.useState<'text' | 'call' | null>(null);
   const [ready, setReady] = React.useState(false);
   const [chatVisible, setChatVisible] = React.useState(false);
   // Desktop only: the chat sidebar can be hidden to give the app the window.
@@ -150,6 +153,7 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
 
   const handleEvent = React.useCallback((ev: AgentEvent) => {
     if (ev.type === 'text_delta') {
+      setStreaming('text');
       setEntries((prev) => {
         // blockIndex restarts at 0 every turn, so only match entries after the
         // latest user message — otherwise new text appends to an old reply.
@@ -174,7 +178,10 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
           },
         ];
       });
+    } else if (ev.type === 'tool_call_start') {
+      setStreaming('call');
     } else if (ev.type === 'tool_use') {
+      setStreaming(null);
       setEntries((prev) => [
         ...prev,
         {
@@ -215,6 +222,7 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
         return copy;
       });
     } else if (ev.type === 'reasoning') {
+      if (ev.tokens === 0) setStreaming(null);
       setReasoningTokens(ev.tokens);
     } else if (ev.type === 'error') {
       setEntries((prev) => [
@@ -246,19 +254,22 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
           handleEvent,
         );
         runRef.current = run;
-        const nextHistory = await run.result;
-        historyRef.current = nextHistory;
+        const outcome = await run.result;
+        historyRef.current = outcome.history;
         if (projectAtStart === activeProjectRef.current) {
-          setEntries((latest) => {
-            persist(projectAtStart, nextHistory, latest);
-            return latest;
+          setEntries((prev) => {
+            const next: Entry[] = [
+              ...prev,
+              { kind: 'turnEnd', id: `end-${prev.length}`, status: outcome.status },
+            ];
+            persist(projectAtStart, outcome.history, next);
+            return next;
           });
         }
         if (projectAtStart) projectStore.touch(projectAtStart).catch(() => {});
       } catch {
-        // runAgentTurn already emits 'error' via handleEvent, except on a
-        // user stop: keep the request in history so the next turn has context
-        // (any files already written stay written).
+        // Only a stop before the agent started lands here; there's nothing to
+        // record but the request itself.
         if (stoppedRef.current && projectAtStart === activeProjectRef.current) {
           const nextHistory: ChatMessage[] = [
             ...priorHistory,
@@ -269,7 +280,7 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
           setEntries((prev) => {
             const next: Entry[] = [
               ...prev,
-              { kind: 'notice', id: `stop-${prev.length}`, text: 'Stopped' },
+              { kind: 'turnEnd', id: `end-${prev.length}`, status: 'stopped' },
             ];
             persist(projectAtStart, nextHistory, next);
             return next;
@@ -282,6 +293,7 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
         }
         setRunning(false);
         setReasoningTokens(0);
+        setStreaming(null);
         runRef.current = null;
       }
     },
@@ -325,6 +337,11 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
     setInput('');
     await runTurn(text);
   };
+
+  const retry = React.useCallback(() => {
+    const lastUser = [...entries].reverse().find((e) => e.kind === 'user');
+    if (lastUser && !running) runTurn(lastUser.text);
+  }, [entries, running, runTurn]);
 
   const fixRenderErrorNow = React.useCallback(() => {
     const err = renderErrorRef.current;
@@ -509,7 +526,10 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
             entries={entries}
             running={running}
             reasoningTokens={reasoningTokens}
+            streaming={streaming}
             memory={chatScrollRef}
+            onRetry={retry}
+            onSuggest={runTurn}
           />
 
           <View style={[styles.composerWrap, { paddingBottom: 10 + insets.bottom }]}>
@@ -771,10 +791,13 @@ function formatRenderErrorPrompt(err: RenderError): string {
       : err.stage === 'handler'
         ? `threw an error in an event handler or timer${ref}`
         : `failed during ${err.stage} in ${err.path}${ref}`;
-  const trimmedStack = err.stack
-    ? err.stack.split('\n').slice(0, 8).join('\n')
-    : '';
-  const stackBlock = trimmedStack ? `\n\nStack (first frames):\n${trimmedStack}` : '';
+  // Only the app's own frames (vfs:///path); Blank Slate's bundle frames are
+  // long URLs that say nothing about the app's code.
+  const appFrames = err.stack
+    ? err.stack.split('\n').filter((l) => l.includes('vfs:///')).slice(0, 8)
+    : [];
+  const trimmedStack = appFrames.map((l) => l.trim()).join('\n');
+  const stackBlock = trimmedStack ? `\n\nStack (app code frames):\n${trimmedStack}` : '';
   const recent = recentHistoryLines(err.eventId);
   const recentBlock = recent ? `\n\nRecent app history:\n${recent}` : '';
   const ask =
@@ -801,8 +824,13 @@ function findLastIndex<T>(arr: T[], pred: (v: T) => boolean): number {
   return -1;
 }
 
+// Web: an app wider than its pane (or one that focuses an input off to the
+// side) would otherwise scroll the whole page sideways, chat and all. 'clip',
+// unlike 'hidden', can't be scrolled by focus or scrollIntoView.
+const clipOnWeb = Platform.OS === 'web' ? ({ overflow: 'clip' } as object) : null;
+
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: colors.slate },
+  root: { flex: 1, backgroundColor: colors.slate, ...clipOnWeb },
   loading: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.slate },
   rootWide: { flexDirection: 'row' },
   sidebar: {
@@ -811,7 +839,7 @@ const styles = StyleSheet.create({
     borderRightColor: colors.line,
     backgroundColor: colors.slate,
   },
-  appLayer: { flex: 1 },
+  appLayer: { flex: 1, ...clipOnWeb },
   pressed: { opacity: 0.7 },
   floatingBadge: {
     // Position and size come from DraggableBadge.

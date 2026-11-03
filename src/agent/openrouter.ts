@@ -42,6 +42,8 @@ export type StreamHandlers = {
   // Characters of reasoning received so far in this response. Reasoning isn't
   // shown, but without it a long think looks like a hang.
   onReasoning?: (totalChars: number) => void;
+  // A tool call's name arrived; its arguments are still streaming.
+  onToolCall?: (name: string) => void;
 };
 
 export type Usage = {
@@ -107,6 +109,9 @@ export async function streamChatCompletion(
   // inside OpenRouter and consume indices without ever appearing here, so the
   // indices we see are not necessarily contiguous.
   const calls = new Map<number, ToolCall>();
+  // A hosted search mid-reply splits the text in two with no separator
+  // ("…confirm it.The latest…"); its citations arrive at the split.
+  let seam = false;
 
   const handleChunk = (chunk: Chunk) => {
     if (chunk.error) {
@@ -118,8 +123,10 @@ export async function streamChatCompletion(
     if (!choice) return;
     const delta = choice.delta ?? {};
     if (delta.content) {
-      text += delta.content;
-      handlers.onText(delta.content);
+      const piece = seam && text && !/\s$/.test(text) ? `\n\n${delta.content}` : delta.content;
+      seam = false;
+      text += piece;
+      handlers.onText(piece);
     }
     for (const tc of delta.tool_calls ?? []) {
       let call = calls.get(tc.index);
@@ -128,7 +135,11 @@ export async function streamChatCompletion(
         calls.set(tc.index, call);
       }
       if (tc.id) call.id = tc.id;
-      if (tc.function?.name) call.function.name += tc.function.name;
+      if (tc.function?.name) {
+        const first = !call.function.name;
+        call.function.name += tc.function.name;
+        if (first) handlers.onToolCall?.(call.function.name);
+      }
       if (tc.function?.arguments) call.function.arguments += tc.function.arguments;
     }
     if (delta.reasoning_details) reasoningDetails.push(...delta.reasoning_details);
@@ -138,7 +149,10 @@ export async function streamChatCompletion(
       handlers.onReasoning?.(reasoningChars);
     }
     for (const a of delta.annotations ?? []) {
-      if (a.type === 'url_citation' && a.url_citation) handlers.onCitation(a.url_citation);
+      if (a.type === 'url_citation' && a.url_citation) {
+        seam = true;
+        handlers.onCitation(a.url_citation);
+      }
     }
     if (choice.finish_reason) finishReason = choice.finish_reason;
   };

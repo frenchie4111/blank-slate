@@ -1,4 +1,5 @@
 import { streamChatCompletion, type ChatMessage, type ContentPart, type ToolCall } from './openrouter';
+import { IMAGE_ATTACHED, IMAGE_DROPPED } from './debugTools';
 import { executeTool, SERVER_TOOL_DEFINITIONS, TOOL_DEFINITIONS, type ToolResult } from './tools';
 import { systemPromptFor } from './systemPrompt';
 
@@ -37,6 +38,9 @@ export type AgentEvent =
   // Approximate reasoning tokens so far in the current request; resets to 0
   // when the next request starts.
   | { type: 'reasoning'; tokens: number }
+  // The model started writing a tool call; arguments (often a whole file)
+  // stream in before tool_use fires.
+  | { type: 'tool_call_start'; name: string }
   | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown>; blockIndex: number }
   | { type: 'tool_result'; id: string; ok: boolean; text: string }
   | {
@@ -63,8 +67,17 @@ export type AgentConfig = {
   autoAppIcons: boolean;
 };
 
+// How a turn ended. 'stopped' and 'error' still carry the partial history, so
+// the next turn knows what already happened (files written, text said).
+export type TurnStatus = 'done' | 'stopped' | 'error';
+
+export type TurnOutcome = {
+  history: ChatMessage[];
+  status: TurnStatus;
+};
+
 export type AgentRun = {
-  result: Promise<ChatMessage[]>;
+  result: Promise<TurnOutcome>;
   abort: () => void;
 };
 
@@ -79,25 +92,32 @@ export function runAgentTurn(
   const controller = new AbortController();
   let aborted = false;
 
-  const result = (async () => {
-    // Block indices keep UI entries ordered and unique across iterations. Each
-    // iteration reserves: 0 = assistant text, 1 = web sources, 2.. = tool calls.
-    let blockOffset = 0;
+  const finish = (status: TurnStatus, note?: string): TurnOutcome => {
+    closeTurn(messages, note);
+    return { history: withoutImages(messages), status };
+  };
 
-    for (let turn = 0; turn < MAX_TURNS; turn++) {
-      if (aborted) throw new Error('Aborted');
+  const result = (async (): Promise<TurnOutcome> => {
+    // Text streamed by the request in flight, kept for a stop mid-stream.
+    let partial = '';
+    try {
+      // Block indices keep UI entries ordered and unique across iterations. Each
+      // iteration reserves: 0 = assistant text, 1 = web sources, 2.. = tool calls.
+      let blockOffset = 0;
 
-      const textBlock = blockOffset;
-      const sourcesBlock = blockOffset + 1;
-      const sourcesId = `web-${turn}-${Date.now()}`;
-      const sources = new Map<string, { title: string; url: string }>();
+      for (let turn = 0; turn < MAX_TURNS; turn++) {
+        if (aborted) throw new Error('Aborted');
 
-      let lastReasoningTokens = 0;
-      onEvent({ type: 'reasoning', tokens: 0 });
+        const textBlock = blockOffset;
+        const sourcesBlock = blockOffset + 1;
+        const sourcesId = `web-${turn}-${Date.now()}`;
+        const sources = new Map<string, { title: string; url: string }>();
 
-      let streamed;
-      try {
-        streamed = await streamChatCompletion(
+        let lastReasoningTokens = 0;
+        onEvent({ type: 'reasoning', tokens: 0 });
+        partial = '';
+
+        const streamed = await streamChatCompletion(
           config.apiKey,
           {
             model: config.model,
@@ -110,7 +130,11 @@ export function runAgentTurn(
           },
           controller.signal,
           {
-            onText: (delta) => onEvent({ type: 'text_delta', delta, blockIndex: textBlock }),
+            onText: (delta) => {
+              partial += delta;
+              onEvent({ type: 'text_delta', delta, blockIndex: textBlock });
+            },
+            onToolCall: (name) => onEvent({ type: 'tool_call_start', name }),
             onReasoning: (chars) => {
               // ~4 chars per token; only re-render every 50 tokens or so.
               const tokens = Math.round(chars / 4);
@@ -138,92 +162,91 @@ export function runAgentTurn(
             },
           },
         );
-      } catch (e) {
-        if (aborted) throw new Error('Aborted');
-        throw e;
-      }
+        partial = '';
 
-      const { message, finishReason, usage, provider } = streamed;
-      if (__DEV__ && usage) {
-        const details = usage.prompt_tokens_details;
-        console.log(
-          `[agent] ${config.model} via ${provider ?? '?'} prompt=${usage.prompt_tokens} cached=${details?.cached_tokens ?? 0} ` +
-            `cache_write=${details?.cache_write_tokens ?? 0} completion=${usage.completion_tokens} ` +
-            `cost=$${usage.cost ?? '?'} finish=${finishReason} text=${JSON.stringify((message.content ?? '').slice(0, 80))}`,
-        );
-      }
-      messages.push(message);
-      const toolCalls = message.tool_calls ?? [];
-      blockOffset += 2 + toolCalls.length;
+        const { message, finishReason, usage, provider } = streamed;
+        if (__DEV__ && usage) {
+          const details = usage.prompt_tokens_details;
+          console.log(
+            `[agent] ${config.model} via ${provider ?? '?'} prompt=${usage.prompt_tokens} cached=${details?.cached_tokens ?? 0} ` +
+              `cache_write=${details?.cache_write_tokens ?? 0} completion=${usage.completion_tokens} ` +
+              `cost=$${usage.cost ?? '?'} finish=${finishReason} text=${JSON.stringify((message.content ?? '').slice(0, 80))}`,
+          );
+        }
+        messages.push(withSources(message, sources));
+        const toolCalls = message.tool_calls ?? [];
+        blockOffset += 2 + toolCalls.length;
 
-      if (finishReason === 'length' && toolCalls.length === 0) {
-        onEvent({
-          type: 'error',
-          message: message.content
+        if (finishReason === 'length' && toolCalls.length === 0) {
+          const text = message.content
             ? 'The model hit its output limit before finishing.'
-            : 'The model used its whole output budget thinking and never got to act. Try again, or pick a different model in Settings.',
-        });
-        return withoutImages(messages);
-      }
-      if (toolCalls.length === 0) {
-        onEvent({ type: 'done' });
-        return withoutImages(messages);
+            : 'The model used its whole output budget thinking and never got to act. Try again, or pick a different model in Settings.';
+          onEvent({ type: 'error', message: text });
+          return finish('error', '(Cut off: hit the output limit.)');
+        }
+        if (toolCalls.length === 0) {
+          onEvent({ type: 'done' });
+          return finish('done');
+        }
+
+        const images: NonNullable<ToolResult['image']>[] = [];
+
+        for (let i = 0; i < toolCalls.length; i++) {
+          if (aborted) throw new Error('Aborted');
+          const call = toolCalls[i];
+          const parsed = parseArguments(call);
+          onEvent({
+            type: 'tool_use',
+            id: call.id,
+            name: call.function.name,
+            input: parsed.ok ? parsed.input : {},
+            blockIndex: textBlock + 2 + i,
+          });
+          const toolResult = parsed.ok
+            ? await executeTool(call.function.name, parsed.input, {
+                apiKey: config.apiKey,
+                model: config.model,
+                signal: controller.signal,
+              })
+            : { ok: false, text: parsed.error };
+          if (toolResult.image) images.push(toolResult.image);
+          onEvent({ type: 'tool_result', id: call.id, ok: toolResult.ok, text: toolResult.text });
+          messages.push({
+            role: 'tool',
+            tool_call_id: call.id,
+            content: toolResult.ok ? toolResult.text : `Error: ${toolResult.text}`,
+          });
+        }
+        // Tool results must directly follow the assistant message, so
+        // screenshots go after all of them, as one user message.
+        if (images.length) {
+          messages.push({
+            role: 'user',
+            content: images.flatMap((img): ContentPart[] => [
+              { type: 'text', text: img.caption },
+              { type: 'image_url', image_url: { url: img.dataUrl } },
+            ]),
+          });
+          dropOldImages(messages, MAX_LIVE_IMAGES);
+        }
+
+        onEvent({ type: 'iteration_end' });
       }
 
-      const images: NonNullable<ToolResult['image']>[] = [];
-
-      for (let i = 0; i < toolCalls.length; i++) {
-        if (aborted) throw new Error('Aborted');
-        const call = toolCalls[i];
-        const parsed = parseArguments(call);
-        onEvent({
-          type: 'tool_use',
-          id: call.id,
-          name: call.function.name,
-          input: parsed.ok ? parsed.input : {},
-          blockIndex: textBlock + 2 + i,
-        });
-        const toolResult = parsed.ok
-          ? await executeTool(call.function.name, parsed.input, {
-              apiKey: config.apiKey,
-              model: config.model,
-              signal: controller.signal,
-            })
-          : { ok: false, text: parsed.error };
-        if (toolResult.image) images.push(toolResult.image);
-        onEvent({ type: 'tool_result', id: call.id, ok: toolResult.ok, text: toolResult.text });
-        messages.push({
-          role: 'tool',
-          tool_call_id: call.id,
-          content: toolResult.ok ? toolResult.text : `Error: ${toolResult.text}`,
-        });
-      }
-      // Tool results must directly follow the assistant message, so
-      // screenshots go after all of them, as one user message.
-      if (images.length) {
-        messages.push({
-          role: 'user',
-          content: images.flatMap((img): ContentPart[] => [
-            { type: 'text', text: img.caption },
-            { type: 'image_url', image_url: { url: img.dataUrl } },
-          ]),
-        });
-        dropOldImages(messages, MAX_LIVE_IMAGES);
-      }
-
-      onEvent({ type: 'iteration_end' });
+      onEvent({
+        type: 'error',
+        message: `Reached max ${MAX_TURNS} tool-use iterations without finishing.`,
+      });
+      return finish('error', `(Stopped after ${MAX_TURNS} rounds of tool calls without finishing.)`);
+    } catch (e) {
+      const message = (e as Error).message;
+      if (!aborted) onEvent({ type: 'error', message });
+      if (partial.trim()) messages.push({ role: 'assistant', content: partial });
+      return aborted
+        ? finish('stopped', '(Stopped by the user before finishing.)')
+        : finish('error', `(This reply failed: ${message})`);
     }
-
-    onEvent({
-      type: 'error',
-      message: `Reached max ${MAX_TURNS} tool-use iterations without finishing.`,
-    });
-    return withoutImages(messages);
   })();
-
-  result.catch((e) => {
-    if (!aborted) onEvent({ type: 'error', message: (e as Error).message });
-  });
 
   return {
     result,
@@ -265,6 +288,21 @@ function reasoningOptions(model: string): Record<string, unknown> {
   return { reasoning: { max_tokens: REASONING_BUDGET } };
 }
 
+// Hosted web search/fetch run inside the provider call and leave no trace in
+// the message except url_citation annotations. Without a record, the next
+// request shows the model claims with nothing behind them, and it decides it
+// made them up, apologises and searches again. So the sources go into the
+// saved reply itself. The UI renders from stream events, not this text.
+function withSources(
+  message: Extract<ChatMessage, { role: 'assistant' }>,
+  sources: Map<string, { title: string; url: string }>,
+): ChatMessage {
+  if (!sources.size) return message;
+  const list = [...sources.values()].map((s) => `- ${s.title} — ${s.url}`).join('\n');
+  const note = `Web sources I consulted for this:\n${list}`;
+  return { ...message, content: message.content ? `${message.content}\n\n${note}` : note };
+}
+
 function parseArguments(
   call: ToolCall,
 ): { ok: true; input: Record<string, unknown> } | { ok: false; error: string } {
@@ -289,19 +327,24 @@ function imageCount(m: ChatMessage): number {
     : 0;
 }
 
-function asText(m: ChatMessage): ChatMessage {
-  if (m.role !== 'user' || !Array.isArray(m.content)) return m;
-  const captions = m.content.filter((p) => p.type === 'text').map((p) => (p as { text: string }).text);
-  return { role: 'user', content: `[${captions.join('; ')}: image no longer attached]` };
-}
-
+// Screenshot messages are removed outright rather than left as a text stub:
+// a user-role line the user never typed reads to the model as injected text.
+// The tool results that pointed at the image say it's gone instead.
 function dropOldImages(messages: ChatMessage[], keep: number): void {
   let seen = 0;
   for (let i = messages.length - 1; i >= 0; i--) {
     const n = imageCount(messages[i]);
     if (!n) continue;
     seen += n;
-    if (seen > keep) messages[i] = asText(messages[i]);
+    if (seen <= keep) continue;
+    messages.splice(i, 1);
+    for (let j = i - 1; j >= 0; j--) {
+      const m = messages[j];
+      if (m.role !== 'tool') break;
+      if (m.content.includes(IMAGE_ATTACHED)) {
+        messages[j] = { ...m, content: m.content.replace(IMAGE_ATTACHED, IMAGE_DROPPED) };
+      }
+    }
   }
 }
 
@@ -309,5 +352,38 @@ function dropOldImages(messages: ChatMessage[], keep: number): void {
 // (and billed) on every later turn. The agent can fetch a screenshot again
 // with get_screenshot.
 function withoutImages(messages: ChatMessage[]): ChatMessage[] {
-  return messages.map(asText);
+  const copy = messages.slice();
+  dropOldImages(copy, 0);
+  return copy;
+}
+
+// Leaves a stopped or failed turn as valid history: every tool call gets a
+// result, and the note says plainly where and why it ended.
+function closeTurn(messages: ChatMessage[], note?: string): void {
+  const callIdx = findLastIndex(messages, (m) => m.role === 'assistant');
+  const call = messages[callIdx];
+  if (call?.role === 'assistant' && call.tool_calls?.length) {
+    const answered = new Set(
+      messages.slice(callIdx + 1).flatMap((m) => (m.role === 'tool' ? [m.tool_call_id] : [])),
+    );
+    // Results must come straight after the call, before any screenshot message.
+    let at = callIdx + 1;
+    while (messages[at]?.role === 'tool') at++;
+    const missing = call.tool_calls
+      .filter((c) => !answered.has(c.id))
+      .map((c): ChatMessage => ({ role: 'tool', tool_call_id: c.id, content: 'Error: not run, the turn ended first.' }));
+    messages.splice(at, 0, ...missing);
+  }
+  if (!note) return;
+  const last = messages[messages.length - 1];
+  if (last.role === 'assistant' && !last.tool_calls?.length) {
+    messages[messages.length - 1] = { ...last, content: last.content ? `${last.content}\n\n${note}` : note };
+  } else {
+    messages.push({ role: 'assistant', content: note });
+  }
+}
+
+function findLastIndex<T>(arr: T[], pred: (v: T) => boolean): number {
+  for (let i = arr.length - 1; i >= 0; i--) if (pred(arr[i])) return i;
+  return -1;
 }

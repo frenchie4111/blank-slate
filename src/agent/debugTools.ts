@@ -64,6 +64,10 @@ export const DEBUG_FUNCTION_TOOLS = [
 
 export const DEBUG_TOOL_NAMES = new Set(DEBUG_FUNCTION_TOOLS.map((t) => t.name));
 
+// The agent loop swaps the first for the second once the image is dropped.
+export const IMAGE_ATTACHED = 'The image is attached in the next message.';
+export const IMAGE_DROPPED = 'The image was shown then and is no longer attached; get_screenshot fetches it again.';
+
 export type DebugToolResult = {
   ok: boolean;
   text: string;
@@ -125,8 +129,12 @@ async function deliver(
   if (await modelAcceptsImages(ctx.apiKey, ctx.model)) {
     return {
       ok: true,
-      text: `${head} The image is attached in the next message.`,
-      image: { dataUrl, caption: `Screenshot #${ev.id} of the app${question ? `. Check: ${question}` : ''}` },
+      text: `${head} ${IMAGE_ATTACHED}`,
+      // Sent as a user message, so say where it came from.
+      image: {
+        dataUrl,
+        caption: `(${live ? 'take_screenshot' : 'get_screenshot'} result, attached automatically) Screenshot #${ev.id} of the app${question ? `. Check: ${question}` : ''}`,
+      },
     };
   }
   try {

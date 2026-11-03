@@ -94,7 +94,7 @@ ${ALLOWLIST.map((m) => `- \`${m}\``).join('\n')}
 - \`react-native-safe-area-context\` — notch/home-indicator-aware layouts. Wrap app root with \`<SafeAreaProvider>\` then use \`useSafeAreaInsets()\` or \`<SafeAreaView>\`. Essential for anything full-screen.
 - \`expo-clipboard\` — copy / paste: \`await Clipboard.setStringAsync(text)\`, \`await Clipboard.getStringAsync()\`.
 - \`expo-sqlite\` — real persistent SQL. \`const db = await SQLite.openDatabaseAsync('app.db'); await db.execAsync('CREATE TABLE ...')\`. Use for structured/relational data.
-- \`expo-image-picker\` — pick photos/videos from the library: \`const r = await ImagePicker.launchImageLibraryAsync({ mediaTypes: 'images', quality: 0.8 })\`. Request permission first with \`requestMediaLibraryPermissionsAsync()\`.
+- \`expo-image-picker\` — pick photos/videos from the library: \`const r = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.8 })\`. Request permission first with \`requestMediaLibraryPermissionsAsync()\`.
 - \`expo-audio\` — audio playback and recording. For playback: \`const player = useAudioPlayer(source); player.play()\`. For recording: \`useAudioRecorder\`. Replaces the old \`expo-av\` Audio API.
 - \`expo-video\` — video playback with \`<VideoView player={useVideoPlayer(source)} style={...} />\`. Replaces the old \`expo-av\` Video API.
 - \`expo-notifications\` — local notifications. \`await Notifications.requestPermissionsAsync()\`, then \`Notifications.scheduleNotificationAsync({ content: {...}, trigger: {...} })\`. (No push server — local only.)
@@ -140,7 +140,7 @@ import * as ImagePicker from 'expo-image-picker';
 
 async function pickFromLibrary() {
   const res = await ImagePicker.launchImageLibraryAsync({
-    mediaTypes: ImagePicker.MediaTypeOptions.Images,
+    mediaTypes: ['images'],
     quality: 0.8,
   });
   if (res.canceled || !res.assets?.[0]) return;
@@ -157,6 +157,18 @@ async function takePhoto() {
 \`\`\`
 
 To persist an image across launches, save the \`uri\` string via AsyncStorage. The file itself lives in the app's sandbox.
+
+### Current API notes (Expo SDK 54)
+
+Older APIs you may remember are deprecated or gone. Use these:
+
+- \`expo-image-picker\`: \`mediaTypes: ['images']\` (or \`['videos']\`, \`['images', 'videos']\`). \`MediaTypeOptions\` is deprecated. Results are \`{ canceled, assets }\`; there is no \`cancelled\` or top-level \`uri\`.
+- \`expo-audio\` (not \`expo-av\`): \`const player = useAudioPlayer(src)\`; \`player.play()\`, \`pause()\`, \`seekTo(sec)\`, \`replace(src)\`; read \`useAudioPlayerStatus(player)\` for \`playing\`, \`currentTime\`, \`duration\` (seconds). To record: \`await requestRecordingPermissionsAsync()\`, \`await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true })\`, \`const rec = useAudioRecorder(RecordingPresets.HIGH_QUALITY)\`, then \`await rec.prepareToRecordAsync(); rec.record()\` … \`await rec.stop()\`; the file is \`rec.uri\`.
+- \`expo-video\` (not \`expo-av\`): \`const player = useVideoPlayer(src, p => { p.loop = true; })\` and \`<VideoView player={player} style={...} />\`. There is no \`<Video>\` component.
+- \`expo-sqlite\`: async API only. \`const db = await SQLite.openDatabaseAsync('app.db')\`, then \`db.execAsync\` (DDL), \`db.runAsync(sql, params)\`, \`db.getAllAsync<T>(sql, params)\`, \`db.getFirstAsync<T>(sql, params)\`, \`db.withTransactionAsync\`. Or wrap the tree in \`<SQLiteProvider databaseName="app.db" onInit={migrate}>\` and call \`useSQLiteContext()\`. \`openDatabase\` and \`db.transaction(tx => …)\` no longer exist.
+- \`expo-location\`: \`const { status } = await Location.requestForegroundPermissionsAsync()\`; only if \`status === 'granted'\` call \`getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced })\` or \`watchPositionAsync(opts, cb)\` (returns a subscription; call \`.remove()\` on unmount). Show a message when denied.
+- \`expo-notifications\`: call \`Notifications.setNotificationHandler({ handleNotification: async () => ({ shouldShowBanner: true, shouldShowList: true, shouldPlaySound: false, shouldSetBadge: false }) })\` once (\`shouldShowAlert\` is deprecated). Triggers need a \`type\`: \`{ type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL, seconds: 60 }\`, \`{ type: …DATE, date }\`, \`{ type: …DAILY, hour, minute }\`.
+- \`SafeAreaView\` from \`react-native\` is deprecated; use the one from \`react-native-safe-area-context\`.
 
 ## Code quality
 

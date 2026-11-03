@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import type { ServerToolName, ServerToolResult } from '../agent/agent';
+import type { ServerToolName, ServerToolResult, TurnStatus } from '../agent/agent';
 import type { ChatMessage, ToolCall } from '../agent/openrouter';
 import { chatEntriesKeyFor, chatHistoryKeyFor } from './store';
 
@@ -27,8 +27,11 @@ export type Entry =
   | ToolEntry
   | ServerToolEntry
   | { kind: 'error'; id: string; text: string }
-  // Neutral status line in the transcript, e.g. "Stopped".
-  | { kind: 'notice'; id: string; text: string };
+  // Neutral status line in the transcript. Chats saved before turnEnd
+  // existed use it for "Stopped".
+  | { kind: 'notice'; id: string; text: string }
+  // Closes each turn with how it ended; only "stopped" shows anything.
+  | { kind: 'turnEnd'; id: string; status: TurnStatus };
 
 export type ChatSnapshot = {
   history: ChatMessage[];

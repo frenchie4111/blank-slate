@@ -54,9 +54,12 @@ export type ToolStep = {
   shotId: number | null;
 };
 
+type TurnEndEntry = Extract<Entry, { kind: 'turnEnd' }>;
+
 export type RenderItem =
-  | { type: 'entry'; id: string; entry: Exclude<Entry, ToolLike> }
-  | { type: 'tools'; id: string; steps: ToolStep[]; active: boolean };
+  | { type: 'entry'; id: string; entry: Exclude<Entry, ToolLike | TurnEndEntry> }
+  | { type: 'tools'; id: string; steps: ToolStep[]; active: boolean }
+  | { type: 'turnEnd'; id: string; entry: TurnEndEntry };
 
 // ---- grouping ---------------------------------------------------------------
 
@@ -67,6 +70,11 @@ export function buildRenderItems(entries: Entry[], running: boolean): RenderItem
   let group: Extract<RenderItem, { type: 'tools' }> | null = null;
 
   for (const e of entries) {
+    if (e.kind === 'turnEnd') {
+      group = null;
+      items.push({ type: 'turnEnd', id: e.id, entry: e });
+      continue;
+    }
     if (e.kind === 'tool' || e.kind === 'serverTool') {
       const step = describe(e, known);
       if (!group) {
