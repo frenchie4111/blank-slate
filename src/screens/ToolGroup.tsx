@@ -9,6 +9,7 @@ import {
   Text,
   View,
 } from 'react-native';
+import * as debugHistory from '../debug/history';
 import type { Entry, ServerToolEntry, ToolEntry } from '../project/chatStore';
 import { colors, fonts, noLigatures, radii } from '../theme';
 import { readFile } from '../vfs/vfs';
@@ -31,6 +32,8 @@ type SummaryKey =
   | 'image'
   | 'search'
   | 'fetch'
+  | 'debug'
+  | 'screenshot'
   | 'other';
 
 export type ToolStep = {
@@ -47,6 +50,8 @@ export type ToolStep = {
   input: Record<string, unknown>;
   resultText: string | null;
   thumbPath: string | null;
+  // Debug-history screenshot shown under the row (take/get_screenshot).
+  shotId: number | null;
 };
 
 export type RenderItem =
@@ -110,6 +115,7 @@ function describe(e: ToolLike, known: Map<string, number>): ToolStep {
     del: 0,
     detail: null as string | null,
     thumbPath: null as string | null,
+    shotId: null as number | null,
     web: false,
   };
 
@@ -260,6 +266,48 @@ function describe(e: ToolLike, known: Map<string, number>): ToolStep {
         resultText,
         detail: failed ?? (ok ? path : null),
       };
+    case 'get_app_history': {
+      const n = ok ? countEventLines(resultText) : 0;
+      return {
+        ...base,
+        key: 'debug',
+        icon: 'pulse-outline',
+        label: 'Checked app history',
+        doing: 'Checking app history',
+        status,
+        resultText,
+        detail: failed ?? (ok ? `${n} event${n === 1 ? '' : 's'}` : null),
+      };
+    }
+    case 'get_ui_tree':
+      return {
+        ...base,
+        key: 'debug',
+        icon: 'git-network-outline',
+        label: 'Inspected the UI',
+        doing: 'Inspecting the UI',
+        status,
+        resultText,
+        detail: failed,
+      };
+    case 'take_screenshot':
+    case 'get_screenshot': {
+      const shotId = ok ? shotIdIn(resultText) : null;
+      const live = e.name === 'take_screenshot';
+      return {
+        ...base,
+        key: 'screenshot',
+        icon: 'camera-outline',
+        label: live ? 'Took a screenshot' : `Looked at screenshot #${String(e.input.id ?? '?')}`,
+        doing: live ? 'Taking a screenshot' : 'Opening screenshot',
+        status,
+        resultText,
+        shotId,
+        detail:
+          failed ??
+          (ok ? (shotId === null ? 'unavailable' : resultText?.includes('described it') ? 'described' : 'image') : null),
+      };
+    }
     default:
       return {
         ...base,
@@ -272,6 +320,18 @@ function describe(e: ToolLike, known: Map<string, number>): ToolStep {
         detail: failed,
       };
   }
+}
+
+function countEventLines(text: string | null): number {
+  if (!text) return 0;
+  let n = 0;
+  for (const line of text.split('\n')) if (/^#\d+ /.test(line)) n++;
+  return n;
+}
+
+function shotIdIn(text: string | null): number | null {
+  const m = text ? /^Screenshot #(\d+)/.exec(text) : null;
+  return m ? Number(m[1]) : null;
 }
 
 function serverResultText(r: NonNullable<ServerToolEntry['result']>): string {
@@ -297,6 +357,8 @@ const VERBS: Record<SummaryKey, string> = {
   image: 'generated',
   search: 'searched the web',
   fetch: 'read',
+  debug: 'checked the app',
+  screenshot: 'took',
   other: 'ran',
 };
 
@@ -322,6 +384,10 @@ export function summarize(steps: ToolStep[]): string {
         return `${verb} ${n} image${n === 1 ? '' : 's'}`;
       case 'fetch':
         return `${verb} ${n} page${n === 1 ? '' : 's'}`;
+      case 'debug':
+        return verb;
+      case 'screenshot':
+        return `looked at ${n} screenshot${n === 1 ? '' : 's'}`;
       case 'other':
         return `${verb} ${n} tool${n === 1 ? '' : 's'}`;
       default: {
@@ -450,6 +516,7 @@ function StepRow({ step, live }: { step: ToolStep; live: boolean }) {
         ) : null}
       </Pressable>
       {step.thumbPath ? <VfsImageThumb path={step.thumbPath} /> : null}
+      {step.shotId !== null ? <ShotThumb id={step.shotId} /> : null}
       {open ? (
         <View style={styles.rowBody}>
           <Text style={styles.rowBodyLabel}>Input</Text>
@@ -494,6 +561,30 @@ function VfsImageThumb({ path }: { path: string }) {
   }, [path]);
   if (!uri) return null;
   return <Image source={{ uri }} style={styles.thumb} resizeMode="cover" />;
+}
+
+function ShotThumb({ id }: { id: number }) {
+  const [shot, setShot] = React.useState<{ uri: string; w: number; h: number } | null>(null);
+  React.useEffect(() => {
+    let alive = true;
+    // Saved chats render before the stored history has loaded.
+    debugHistory.ready().then(async () => {
+      const ev = debugHistory.getEvent(id);
+      const uri = ev ? await debugHistory.shotDisplayUri(ev) : null;
+      if (alive && ev && uri) setShot({ uri, w: ev.w ?? 1, h: ev.h ?? 2 });
+    });
+    return () => {
+      alive = false;
+    };
+  }, [id]);
+  if (!shot) return null;
+  return (
+    <Image
+      source={{ uri: shot.uri }}
+      style={[styles.shotThumb, { aspectRatio: shot.w / shot.h }]}
+      resizeMode="cover"
+    />
+  );
 }
 
 function useElapsed(active: boolean): number {
@@ -581,4 +672,12 @@ const styles = StyleSheet.create({
   },
   rowBodyText: { ...noLigatures, fontFamily: fonts.mono, fontSize: 11, lineHeight: 16, color: colors.chalkMuted },
   thumb: { width: 120, height: 120, borderRadius: radii.chip, marginTop: 4, marginBottom: 6 },
+  shotThumb: {
+    width: 96,
+    borderRadius: radii.chip,
+    borderWidth: 1,
+    borderColor: colors.line,
+    marginTop: 4,
+    marginBottom: 6,
+  },
 });

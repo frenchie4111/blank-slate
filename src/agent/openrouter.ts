@@ -16,8 +16,14 @@ export type ToolCall = {
   function: { name: string; arguments: string };
 };
 
+export type ContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string } };
+
 export type ChatMessage =
-  | { role: 'user'; content: string }
+  // Array content only ever carries a screenshot within a single turn; the
+  // agent swaps it back to text before history is saved.
+  | { role: 'user'; content: string | ContentPart[] }
   | {
       role: 'assistant';
       content: string | null;
@@ -199,6 +205,59 @@ export async function generateImage(
     throw new Error(`No image returned.${said}`);
   }
   return { dataUrl, cost: parsed.usage?.cost ?? null };
+}
+
+// One-shot vision call: the "eyes" for chat models that can't take images.
+export async function describeImage(
+  apiKey: string,
+  model: string,
+  dataUrl: string,
+  prompt: string,
+  signal?: AbortSignal,
+): Promise<{ text: string; cost: number | null; usage: Usage | null }> {
+  const res = await expoFetch(ENDPOINT, {
+    method: 'POST',
+    headers: headersFor(apiKey),
+    body: JSON.stringify({
+      model,
+      max_tokens: 1200,
+      // Describing a screenshot needs no deliberation; reasoning only adds cost.
+      reasoning: { effort: 'low', exclude: true },
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: prompt },
+            { type: 'image_url', image_url: { url: dataUrl } },
+          ],
+        },
+      ],
+    }),
+    signal,
+  });
+  const raw = await res.text();
+  if (!res.ok) throw new Error(`OpenRouter ${res.status}: ${describeErrorBody(raw)}`);
+  const parsed = JSON.parse(raw) as {
+    choices?: { message?: { content?: string | null } }[];
+    usage?: Usage;
+  };
+  const text = parsed.choices?.[0]?.message?.content?.trim();
+  if (!text) throw new Error('The vision model returned no description.');
+  return { text, cost: parsed.usage?.cost ?? null, usage: parsed.usage ?? null };
+}
+
+/** input_modalities for a model, e.g. ['text', 'image']. */
+export async function fetchInputModalities(apiKey: string, model: string): Promise<string[] | null> {
+  // The per-model endpoints route is a few KB; /models is several hundred.
+  const id = model.replace(/^~/, '').split(':')[0];
+  const res = await expoFetch(`https://openrouter.ai/api/v1/models/${id}/endpoints`, {
+    headers: headersFor(apiKey),
+  });
+  if (!res.ok) return null;
+  const parsed = (await res.json()) as {
+    data?: { architecture?: { input_modalities?: string[] } };
+  };
+  return parsed.data?.architecture?.input_modalities ?? null;
 }
 
 // Fallback for providers that only send structured reasoning_details.

@@ -14,6 +14,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AppIcon } from '../components/AppIcon';
+import * as debugHistory from '../debug/history';
 import {
   appearanceOf,
   defaultGlyph,
@@ -97,6 +98,7 @@ export function YourAppsScreen({
     try {
       if (pendingDelete.id === currentId) await onStopBuild();
       await projectStore.remove(pendingDelete.id);
+      await debugHistory.removeProject(pendingDelete.id);
     } finally {
       setBusy(false);
       setPendingDelete(null);

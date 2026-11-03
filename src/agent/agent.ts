@@ -1,5 +1,5 @@
-import { streamChatCompletion, type ChatMessage, type ToolCall } from './openrouter';
-import { executeTool, SERVER_TOOL_DEFINITIONS, TOOL_DEFINITIONS } from './tools';
+import { streamChatCompletion, type ChatMessage, type ContentPart, type ToolCall } from './openrouter';
+import { executeTool, SERVER_TOOL_DEFINITIONS, TOOL_DEFINITIONS, type ToolResult } from './tools';
 import { systemPromptFor } from './systemPrompt';
 
 const MAX_TOKENS = 16384;
@@ -7,6 +7,9 @@ const MAX_TOKENS = 16384;
 // thinking and never call a tool. Capping reasoning at half leaves room to act.
 const REASONING_BUDGET = 8192;
 const MAX_TURNS = 25;
+// Screenshots stay as images only while the turn that took them is running,
+// and only the latest few: each one is resent with every later request.
+const MAX_LIVE_IMAGES = 2;
 
 export type WebSearchHit = {
   title: string;
@@ -160,12 +163,14 @@ export function runAgentTurn(
             ? 'The model hit its output limit before finishing.'
             : 'The model used its whole output budget thinking and never got to act. Try again, or pick a different model in Settings.',
         });
-        return messages;
+        return withoutImages(messages);
       }
       if (toolCalls.length === 0) {
         onEvent({ type: 'done' });
-        return messages;
+        return withoutImages(messages);
       }
+
+      const images: NonNullable<ToolResult['image']>[] = [];
 
       for (let i = 0; i < toolCalls.length; i++) {
         if (aborted) throw new Error('Aborted');
@@ -181,15 +186,29 @@ export function runAgentTurn(
         const toolResult = parsed.ok
           ? await executeTool(call.function.name, parsed.input, {
               apiKey: config.apiKey,
+              model: config.model,
               signal: controller.signal,
             })
           : { ok: false, text: parsed.error };
+        if (toolResult.image) images.push(toolResult.image);
         onEvent({ type: 'tool_result', id: call.id, ok: toolResult.ok, text: toolResult.text });
         messages.push({
           role: 'tool',
           tool_call_id: call.id,
           content: toolResult.ok ? toolResult.text : `Error: ${toolResult.text}`,
         });
+      }
+      // Tool results must directly follow the assistant message, so
+      // screenshots go after all of them, as one user message.
+      if (images.length) {
+        messages.push({
+          role: 'user',
+          content: images.flatMap((img): ContentPart[] => [
+            { type: 'text', text: img.caption },
+            { type: 'image_url', image_url: { url: img.dataUrl } },
+          ]),
+        });
+        dropOldImages(messages, MAX_LIVE_IMAGES);
       }
 
       onEvent({ type: 'iteration_end' });
@@ -199,7 +218,7 @@ export function runAgentTurn(
       type: 'error',
       message: `Reached max ${MAX_TURNS} tool-use iterations without finishing.`,
     });
-    return messages;
+    return withoutImages(messages);
   })();
 
   result.catch((e) => {
@@ -262,4 +281,33 @@ function parseArguments(
     // Tell the model so it can retry instead of silently running with {}.
     return { ok: false, error: `Could not parse tool arguments as JSON (${raw.length} chars).` };
   }
+}
+
+function imageCount(m: ChatMessage): number {
+  return m.role === 'user' && Array.isArray(m.content)
+    ? m.content.filter((p) => p.type === 'image_url').length
+    : 0;
+}
+
+function asText(m: ChatMessage): ChatMessage {
+  if (m.role !== 'user' || !Array.isArray(m.content)) return m;
+  const captions = m.content.filter((p) => p.type === 'text').map((p) => (p as { text: string }).text);
+  return { role: 'user', content: `[${captions.join('; ')}: image no longer attached]` };
+}
+
+function dropOldImages(messages: ChatMessage[], keep: number): void {
+  let seen = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const n = imageCount(messages[i]);
+    if (!n) continue;
+    seen += n;
+    if (seen > keep) messages[i] = asText(messages[i]);
+  }
+}
+
+// Saved history never holds image data: it would bloat storage and be resent
+// (and billed) on every later turn. The agent can fetch a screenshot again
+// with get_screenshot.
+function withoutImages(messages: ChatMessage[]): ChatMessage[] {
+  return messages.map(asText);
 }

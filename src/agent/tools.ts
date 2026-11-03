@@ -1,5 +1,6 @@
 import { getCurrentProjectIdSync, setIcon } from '../project/store';
 import { deleteFile, isImagePath, listFiles, normalizePath, readFile, writeFile } from '../vfs/vfs';
+import { DEBUG_FUNCTION_TOOLS, DEBUG_TOOL_NAMES, executeDebugTool } from './debugTools';
 import { IMAGE_MODEL } from './models';
 import { generateImage } from './openrouter';
 
@@ -113,14 +114,20 @@ const FUNCTION_TOOLS: FunctionTool[] = [
   },
 ];
 
-export const TOOL_DEFINITIONS = FUNCTION_TOOLS.map((t) => ({
+export const TOOL_DEFINITIONS = [...FUNCTION_TOOLS, ...DEBUG_FUNCTION_TOOLS].map((t) => ({
   type: 'function' as const,
   function: t,
 }));
 
-export type ToolResult = { ok: boolean; text: string };
+export type ToolResult = {
+  ok: boolean;
+  text: string;
+  // A screenshot for the model to look at. Tool results are text-only, so the
+  // agent loop sends it as a user message right after the tool results.
+  image?: { dataUrl: string; caption: string };
+};
 
-export type ToolContext = { apiKey: string; signal?: AbortSignal };
+export type ToolContext = { apiKey: string; model: string; signal?: AbortSignal };
 
 export async function executeTool(
   name: string,
@@ -128,6 +135,7 @@ export async function executeTool(
   ctx: ToolContext,
 ): Promise<ToolResult> {
   try {
+    if (DEBUG_TOOL_NAMES.has(name)) return await executeDebugTool(name, input, ctx);
     switch (name) {
       case 'read_file': {
         const path = requireString(input, 'path');

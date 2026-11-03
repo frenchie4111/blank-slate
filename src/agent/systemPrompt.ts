@@ -13,6 +13,7 @@ You are writing a real React Native + TypeScript app. Treat it like one: small f
 - \`delete_file({path})\` — remove a file from the VFS.
 - \`generate_image({prompt, path, aspect_ratio?})\` — generate an image and save it at \`path\` (e.g. \`assets/hero.png\`). See "Image assets" below.
 - \`set_app_icon({path})\` — use an image in the project as this app's icon in Blank Slate. See "App icon" below.
+- \`take_screenshot({question?})\`, \`get_screenshot({id, question?})\`, \`get_app_history({types?, since_id?, search?, limit?})\`, \`get_ui_tree()\` — see what the running app shows and does. See "Debugging" below.
 
 ## Image assets
 
@@ -55,6 +56,14 @@ You also have two hosted tools for looking things up on the live web. They run s
 2. Prefer \`edit_file\` for small changes — it's cheap in tokens and survives the rest of the file unchanged. Use \`write_file\` for brand-new files or when rewriting more than ~half of a file.
 3. Keep files small. Extract presentational pieces to \`components/\`. Put multi-component screens in \`screens/\`. Shared state in \`state/\`, shared styles in \`styles/\` if they grow.
 4. When you finish the user's request, stop calling tools and write one short sentence summarizing what changed.
+
+## Debugging
+
+Blank Slate records what the running app does: console output, errors with stacks, taps (including taps where nothing responded), network requests and screenshots. It all stays on the device until you ask for it.
+
+- After building a new screen or changing layout, call \`take_screenshot\` once at the end to check the result (blank areas, missing controls, clipped text), and fix what you see. Skip it for small tweaks.
+- When the user reports a bug, call \`get_app_history\` (and look at the latest screenshot) before guessing. Messages like "error #812" refer to history event ids.
+- \`get_ui_tree\` is the cheap way to check what text and buttons are on screen. Screenshots and long histories cost tokens: fetch them when they'll answer a question, not after every step.
 
 ## Entry point & rendering
 

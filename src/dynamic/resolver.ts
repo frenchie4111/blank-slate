@@ -1,4 +1,5 @@
 import type { ComponentType } from 'react';
+import { moduleScope } from '../debug/instrument';
 import { isImagePath, readFile } from '../vfs/vfs';
 import { BUILTIN_MODULES, ALLOWLIST, isBuiltin } from './requireShim';
 import { transpile } from './transpile';
@@ -173,8 +174,17 @@ async function compileFile(
 
   const moduleObj = { exports: moduleExports };
   try {
-    const fn = new Function('require', 'module', 'exports', js);
-    fn(requireFn, moduleObj, moduleObj.exports);
+    // console, fetch, timers etc. are scoped bindings that feed the debug
+    // history. sourceURL makes stack frames read `vfs:///App.tsx:12:5`.
+    const scope = moduleScope();
+    const fn = new Function(
+      'require',
+      'module',
+      'exports',
+      ...scope.names,
+      `${js}\n//# sourceURL=vfs:///${path}`,
+    );
+    fn(requireFn, moduleObj, moduleObj.exports, ...scope.values);
   } catch (e) {
     inFlight.delete(path);
     fail('execute', path, e);

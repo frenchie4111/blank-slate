@@ -7,14 +7,21 @@ import {
   Text,
   View,
 } from 'react-native';
+import { AppProbe } from '../debug/AppProbe';
+import * as history from '../debug/history';
+import { cleanStack } from '../debug/instrument';
+import { scheduleAutoCapture } from '../debug/screenshot';
 import { subscribe as subscribeVfs } from '../vfs/vfs';
 import { compileEntry, invalidate, type CompileError, type CompileResult } from './resolver';
 
 export type RenderError = {
-  stage: 'missing' | 'transpile' | 'resolve' | 'execute' | 'runtime';
+  // 'handler': thrown from an event handler or timer (reported by MainScreen).
+  stage: 'missing' | 'transpile' | 'resolve' | 'execute' | 'runtime' | 'handler';
   path: string;
   message: string;
   stack?: string;
+  // The matching debug-history event, when it was recorded.
+  eventId?: number;
 };
 
 type Props = {
@@ -28,7 +35,7 @@ type Props = {
 type BoundaryProps = {
   children: React.ReactNode;
   resetKey: string | number;
-  onError?: (err: Error) => void;
+  onError?: (err: Error, componentStack?: string) => void;
   onClear?: () => void;
   onFix?: () => void;
 };
@@ -51,8 +58,8 @@ class ErrorBoundary extends React.Component<BoundaryProps, BoundaryState> {
     return null;
   }
 
-  componentDidCatch(error: Error) {
-    this.props.onError?.(error);
+  componentDidCatch(error: Error, info: React.ErrorInfo) {
+    this.props.onError?.(error, info.componentStack ?? undefined);
   }
 
   componentDidUpdate(_prevProps: BoundaryProps, prevState: BoundaryState) {
@@ -129,8 +136,10 @@ export function DynamicView({
     onClearRef.current = onClear;
   }, [onError, onClear]);
 
+  const lastChangeRef = React.useRef<string | null>(null);
   React.useEffect(() => {
     const unsub = subscribeVfs((change) => {
+      lastChangeRef.current = change.path;
       invalidate(change.path);
       // Clear result in the same tick so the stale Component doesn't
       // re-render (and potentially re-throw) against the new resetKey
@@ -161,7 +170,15 @@ export function DynamicView({
   React.useEffect(() => {
     if (!result) return;
     if (!result.ok) {
-      onErrorRef.current?.(toRenderError(result.error));
+      const err = toRenderError(result.error);
+      const ev = history.record({
+        type: 'error',
+        source: 'compile',
+        text: `Build failed (${err.stage}) in ${err.path}: ${err.message}`,
+        detail: cleanStack(err.stack),
+      });
+      scheduleAutoCapture('build error');
+      onErrorRef.current?.({ ...err, eventId: ev?.id });
       prevCompileErroredRef.current = true;
     } else {
       if (prevCompileErroredRef.current) {
@@ -171,33 +188,70 @@ export function DynamicView({
     }
   }, [result]);
 
+  // A new debug-history session per freshly compiled app, started during
+  // render so the app's own render-time logs land in it. Keyed on the result
+  // because React renders again after a render error.
+  const sessionForRef = React.useRef<CompileResult | null>(null);
+  if (result?.ok && sessionForRef.current !== result) {
+    sessionForRef.current = result;
+    history.startSession(
+      lastChangeRef.current ? `App remounted after edit to ${lastChangeRef.current}` : 'App mounted',
+    );
+  }
+
   return (
-    <ErrorBoundary
-      resetKey={`${entry}:${version}:${revision}`}
-      onError={(e) =>
-        onErrorRef.current?.({
-          stage: 'runtime',
-          path: entry,
-          message: e.message,
-          stack: e.stack,
-        })
-      }
-      onClear={() => onClearRef.current?.()}
-      onFix={onFix}
-    >
-      {!result ? (
-        <View style={styles.loading}>
-          <ActivityIndicator color="#666" />
-        </View>
-      ) : !result.ok ? (
-        <ErrorCardFromError error={result.error} onFix={onFix} />
-      ) : (
-        <View style={styles.renderWrap}>
-          <result.Component />
-        </View>
-      )}
-    </ErrorBoundary>
+    <AppProbe>
+      <ErrorBoundary
+        resetKey={`${entry}:${version}:${revision}`}
+        onError={(e, componentStack) => {
+          const ev = history.record({
+            type: 'error',
+            source: 'render',
+            text: `${e.name}: ${e.message} (while rendering)`,
+            detail: [
+              cleanStack(e.stack),
+              componentStack && `Component stack:${trimComponentStack(componentStack)}`,
+            ]
+              .filter(Boolean)
+              .join('\n'),
+          });
+          scheduleAutoCapture('render error');
+          onErrorRef.current?.({
+            stage: 'runtime',
+            path: entry,
+            message: e.message,
+            stack: e.stack,
+            eventId: ev?.id,
+          });
+        }}
+        onClear={() => onClearRef.current?.()}
+        onFix={onFix}
+      >
+        {!result ? (
+          <View style={styles.loading}>
+            <ActivityIndicator color="#666" />
+          </View>
+        ) : !result.ok ? (
+          <ErrorCardFromError error={result.error} onFix={onFix} />
+        ) : (
+          <View style={styles.renderWrap}>
+            <result.Component />
+          </View>
+        )}
+      </ErrorBoundary>
+    </AppProbe>
   );
+}
+
+
+function trimComponentStack(stack: string): string {
+  return stack
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .slice(0, 6)
+    .map((l) => `\n  ${l}`)
+    .join('');
 }
 
 function toRenderError(err: CompileError): RenderError {

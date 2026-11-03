@@ -17,6 +17,9 @@ import type { ChatMessage } from '../agent/openrouter';
 import { DynamicView, type RenderError } from '../dynamic/DynamicView';
 import { clearCompileCache } from '../dynamic/resolver';
 import { AppIcon } from '../components/AppIcon';
+import * as debugHistory from '../debug/history';
+import { onAppError } from '../debug/instrument';
+import { scheduleAutoCapture } from '../debug/screenshot';
 import {
   loadChat,
   saveChat,
@@ -32,6 +35,7 @@ import { LogoMark } from '../theme/LogoMark';
 import * as vfs from '../vfs/vfs';
 import { DraggableBadge } from './DraggableBadge';
 import { FilesPanel } from './FileViewer';
+import { HistoryPanel } from './HistoryPanel';
 import { Markdown } from './Markdown';
 import { SettingsScreen } from './SettingsScreen';
 import { buildRenderItems, ToolGroupCard, type RenderItem } from './ToolGroup';
@@ -56,7 +60,7 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
   // home, so a crashing app can never get in the way of reaching home.
   const [appOpened, setAppOpened] = React.useState(false);
   const [fileCount, setFileCount] = React.useState(0);
-  const [activeTab, setActiveTab] = React.useState<'chat' | 'files'>('chat');
+  const [activeTab, setActiveTab] = React.useState<'chat' | 'files' | 'history'>('chat');
   const [renderRevision, setRenderRevision] = React.useState(0);
   const [renderError, setRenderError] = React.useState<RenderError | null>(null);
 
@@ -224,6 +228,11 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
       setEntries((prev) => [...prev, { kind: 'user', id: `u-${prev.length}`, text }]);
       const projectAtStart = activeProjectRef.current;
       const priorHistory = historyRef.current;
+      // Screenshot the result once the turn is over, if it changed any files.
+      let wrote = false;
+      const unsubWrites = vfs.subscribe(() => {
+        wrote = true;
+      });
       try {
         const [model, autoAppIcons] = await Promise.all([getModel(), getAutoAppIcons()]);
         if (stoppedRef.current) throw new Error('Aborted');
@@ -264,6 +273,10 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
           });
         }
       } finally {
+        unsubWrites();
+        if (wrote && projectAtStart === activeProjectRef.current) {
+          scheduleAutoCapture('after agent turn', 1200);
+        }
         setRunning(false);
         setReasoningTokens(0);
         runRef.current = null;
@@ -326,6 +339,35 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
   const handleRenderClear = React.useCallback(() => {
     renderErrorRef.current = null;
     setTimeout(() => setRenderError(null), 0);
+  }, []);
+
+  // Errors thrown in the app's event handlers and timers don't crash the
+  // render, so nothing else would tell the user. Show them in the banner until
+  // the next edit.
+  React.useEffect(() => {
+    const offError = onAppError(({ event, message, source }) => {
+      scheduleAutoCapture('error', 300);
+      if (renderErrorRef.current && renderErrorRef.current.stage !== 'handler') return;
+      handleRenderError({
+        stage: 'handler',
+        path: source,
+        message,
+        stack: event?.detail,
+        eventId: event?.id,
+      });
+    });
+    const offVfs = vfs.subscribe(() => {
+      if (renderErrorRef.current?.stage === 'handler') handleRenderClear();
+    });
+    return () => {
+      offError();
+      offVfs();
+    };
+  }, [handleRenderError, handleRenderClear]);
+
+  const askAgent = React.useCallback((text: string) => {
+    setInput(text);
+    setActiveTab('chat');
   }, []);
 
   const openApps = () => setAppsOpen(true);
@@ -428,6 +470,11 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
                   active={activeTab === 'files'}
                   onPress={() => setActiveTab('files')}
                 />
+                <SegmentButton
+                  label="History"
+                  active={activeTab === 'history'}
+                  onPress={() => setActiveTab('history')}
+                />
               </View>
             </View>
 
@@ -437,10 +484,14 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
                   <Text style={styles.crashTitle}>
                     {renderError.stage === 'runtime'
                       ? 'App crashed while rendering'
-                      : `App failed during ${renderError.stage}`}
+                      : renderError.stage === 'handler'
+                        ? 'App threw an error'
+                        : `App failed during ${renderError.stage}`}
                   </Text>
                   <Text style={styles.crashMsg} numberOfLines={1}>
-                    {renderError.path} · {renderError.message}
+                    {renderError.stage === 'handler'
+                      ? renderError.message
+                      : `${renderError.path} · ${renderError.message}`}
                   </Text>
                 </View>
                 <Pressable
@@ -513,8 +564,10 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
                   </View>
                 </View>
               </>
-            ) : (
+            ) : activeTab === 'files' ? (
               <FilesPanel projectId={currentId} />
+            ) : (
+              <HistoryPanel projectId={currentId} appOpened={appOpened} onAskAgent={askAgent} />
             )}
           </KeyboardAvoidingView>
         </View>
@@ -698,12 +751,36 @@ async function isUntouched(id: string): Promise<boolean> {
 }
 
 function formatRenderErrorPrompt(err: RenderError): string {
-  const label = err.stage === 'runtime' ? 'crashed at runtime' : `failed during ${err.stage}`;
+  const ref = err.eventId !== undefined ? ` (error #${err.eventId})` : '';
+  const label =
+    err.stage === 'runtime'
+      ? `crashed at runtime in ${err.path}${ref}`
+      : err.stage === 'handler'
+        ? `threw an error in an event handler or timer${ref}`
+        : `failed during ${err.stage} in ${err.path}${ref}`;
   const trimmedStack = err.stack
     ? err.stack.split('\n').slice(0, 8).join('\n')
     : '';
   const stackBlock = trimmedStack ? `\n\nStack (first frames):\n${trimmedStack}` : '';
-  return `The app ${label} in ${err.path}:\n\n${err.message}${stackBlock}\n\nPlease read ${err.path} and fix it so the app loads.`;
+  const recent = recentHistoryLines(err.eventId);
+  const recentBlock = recent ? `\n\nRecent app history:\n${recent}` : '';
+  const ask =
+    err.stage === 'handler'
+      ? 'Please find the cause and fix it.'
+      : `Please read ${err.path} and fix it so the app loads.`;
+  return `The app ${label}:\n\n${err.message}${stackBlock}${recentBlock}\n\n${ask}`;
+}
+
+// The last few events leading up to (and including) the error, so the agent
+// starts with context. Screenshots are left out; it can fetch them.
+function recentHistoryLines(eventId: number | undefined): string {
+  const events = debugHistory
+    .query({ session: debugHistory.currentSession(), limit: 40 })
+    .filter((e) => e.type !== 'screenshot' && (eventId === undefined || e.id <= eventId));
+  return events
+    .slice(-8)
+    .map((e) => debugHistory.formatLine(e))
+    .join('\n');
 }
 
 function findLastIndex<T>(arr: T[], pred: (v: T) => boolean): number {

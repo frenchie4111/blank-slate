@@ -1,5 +1,4 @@
 import * as React from 'react';
-import * as ReactNative from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import * as VectorIcons from '@expo/vector-icons';
@@ -15,10 +14,14 @@ import * as Notifications from 'expo-notifications';
 import * as Location from 'expo-location';
 import * as Blur from 'expo-blur';
 import * as ReactNativeSvg from 'react-native-svg';
+import { instrumentedReactNative } from '../debug/instrument';
 
 export const BUILTIN_MODULES: Record<string, unknown> = {
   react: React,
-  'react-native': ReactNative,
+  // Same API, but touchables, inputs and Text report to the debug history.
+  get 'react-native'() {
+    return instrumentedReactNative();
+  },
   '@react-native-async-storage/async-storage': AsyncStorage,
   '@react-native-community/datetimepicker': DateTimePicker,
   '@expo/vector-icons': VectorIcons,
