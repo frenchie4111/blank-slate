@@ -5,7 +5,6 @@ import {
   KeyboardAvoidingView,
   Platform,
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -33,12 +32,11 @@ import { getAutoAppIcons, getModel } from '../storage/keyStore';
 import { colors, fonts, radii, space } from '../theme';
 import { LogoMark } from '../theme/LogoMark';
 import * as vfs from '../vfs/vfs';
+import { ChatList, newChatScrollMemory, type ChatScrollMemory } from './ChatList';
 import { DraggableBadge } from './DraggableBadge';
 import { FilesPanel } from './FileViewer';
 import { HistoryPanel } from './HistoryPanel';
-import { Markdown } from './Markdown';
 import { SettingsScreen } from './SettingsScreen';
-import { buildRenderItems, ToolGroupCard, type RenderItem } from './ToolGroup';
 import { YourAppsScreen } from './YourAppsScreen';
 
 type Props = { apiKey: string; onResetKey: () => void };
@@ -69,7 +67,7 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
   // The whole in-flight turn, including its bookkeeping after the agent stops.
   const turnRef = React.useRef<Promise<void> | null>(null);
   const stoppedRef = React.useRef(false);
-  const scrollRef = React.useRef<ScrollView | null>(null);
+  const chatScrollRef = React.useRef<ChatScrollMemory>(newChatScrollMemory());
   const activeProjectRef = React.useRef<string | null>(null);
   const renderErrorRef = React.useRef<RenderError | null>(null);
 
@@ -110,6 +108,7 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
       }
       clearCompileCache();
       activeProjectRef.current = nextId;
+      chatScrollRef.current = newChatScrollMemory();
       setCurrentId(nextId);
       setEntries([]);
       historyRef.current = [];
@@ -505,11 +504,12 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
 
             {activeTab === 'chat' ? (
               <>
-                <ChatLog
+                <ChatList
+                  key={currentId ?? 'none'}
                   entries={entries}
                   running={running}
                   reasoningTokens={reasoningTokens}
-                  scrollRef={scrollRef}
+                  memory={chatScrollRef}
                 />
 
                 <View style={[styles.composerWrap, { paddingBottom: 10 + insets.bottom }]}>
@@ -715,121 +715,6 @@ function SegmentButton({
   );
 }
 
-function ChatLog({
-  entries,
-  running,
-  reasoningTokens,
-  scrollRef,
-}: {
-  entries: Entry[];
-  running: boolean;
-  reasoningTokens: number;
-  scrollRef: React.RefObject<ScrollView | null>;
-}) {
-  const items = React.useMemo(() => buildRenderItems(entries, running), [entries, running]);
-  const last = items[items.length - 1];
-  // A live tool group shows its own spinner; otherwise show "Thinking" until
-  // the reply's first text arrives. Long reasoning gets a row (with a count)
-  // even under a live tool group, so it never looks hung.
-  const thinking =
-    running &&
-    !isStreamingText(last) &&
-    (!(last?.type === 'tools' && last.active) || reasoningTokens >= 200);
-  // Follow new output only while the reader is at the bottom, so expanding a
-  // tool card further up doesn't yank the view away. Jumps (not animated
-  // scrolls) keep onScroll from seeing mid-animation offsets.
-  const stickRef = React.useRef(true);
-  React.useEffect(() => {
-    if (running) stickRef.current = true;
-  }, [running]);
-  return (
-    <ScrollView
-      ref={scrollRef}
-      contentContainerStyle={styles.messages}
-      keyboardShouldPersistTaps="handled"
-      scrollEventThrottle={64}
-      onScroll={({ nativeEvent: n }) => {
-        const fromBottom = n.contentSize.height - n.layoutMeasurement.height - n.contentOffset.y;
-        stickRef.current = fromBottom < 48;
-      }}
-      onContentSizeChange={() => {
-        if (stickRef.current) scrollRef.current?.scrollToEnd({ animated: false });
-      }}
-    >
-      {items.length === 0 ? (
-        <View style={styles.empty}>
-          <Text style={styles.emptyTitle}>What should this app become?</Text>
-          <Text style={styles.emptyBody}>
-            Try "a counter with a red increment button, and pull the button into
-            components/Button.tsx".
-          </Text>
-        </View>
-      ) : (
-        items.map((item) => <ItemView key={item.id} item={item} />)
-      )}
-      {thinking ? (
-        <View style={styles.thinking}>
-          <ActivityIndicator size="small" color={colors.dust} />
-          <Text style={styles.thinkingText}>
-            {reasoningTokens >= 200 ? `Thinking… ${formatTokens(reasoningTokens)} tokens` : 'Thinking…'}
-          </Text>
-        </View>
-      ) : null}
-    </ScrollView>
-  );
-}
-
-function formatTokens(n: number): string {
-  return n < 1000 ? String(n) : `${(n / 1000).toFixed(1)}k`;
-}
-
-function isStreamingText(item: RenderItem | undefined): boolean {
-  return item?.type === 'entry' && item.entry.kind === 'assistant';
-}
-
-function ItemView({ item }: { item: RenderItem }) {
-  if (item.type === 'tools') return <ToolGroupCard steps={item.steps} active={item.active} />;
-  return <EntryView entry={item.entry} />;
-}
-
-// Memoized so a streaming chunk only re-renders the entry it touched —
-// handleEvent keeps object identity for every other entry.
-const EntryView = React.memo(function EntryView({
-  entry,
-}: {
-  entry: Exclude<Entry, ToolEntry | ServerToolEntry>;
-}) {
-  if (entry.kind === 'user') {
-    return (
-      <View style={styles.userBubble}>
-        <Text style={styles.userText}>{entry.text}</Text>
-      </View>
-    );
-  }
-  if (entry.kind === 'assistant') {
-    // Whitespace-only blocks are filtered out by buildRenderItems.
-    return (
-      <View style={styles.assistant}>
-        <Markdown text={entry.text.trim()} />
-      </View>
-    );
-  }
-  if (entry.kind === 'notice') {
-    return (
-      <View style={styles.notice}>
-        <Ionicons name="stop-circle-outline" size={14} color={colors.dust} />
-        <Text style={styles.noticeText}>{entry.text}</Text>
-      </View>
-    );
-  }
-  return (
-    <View style={styles.errorCard}>
-      <Ionicons name="alert-circle-outline" size={16} color={colors.danger} />
-      <Text style={styles.errorText}>{entry.text}</Text>
-    </View>
-  );
-});
-
 // Nothing built yet: just the starter App.tsx and an empty chat. Reads the
 // current project, so call it after switching. Matches on the starter's title
 // line so apps seeded with older starter copy still count.
@@ -990,57 +875,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   fixBtnText: { fontFamily: fonts.bodySemi, fontSize: 13, color: colors.slate },
-
-  messages: {
-    flexGrow: 1,
-    gap: 12,
-    paddingHorizontal: space.chatGutter,
-    paddingTop: 8,
-    paddingBottom: 16,
-  },
-  empty: { flex: 1, justifyContent: 'center', gap: 8, paddingHorizontal: 12, paddingBottom: 40 },
-  emptyTitle: {
-    fontFamily: fonts.displaySemi,
-    fontSize: 20,
-    letterSpacing: -0.2,
-    textAlign: 'center',
-    color: colors.chalk,
-  },
-  emptyBody: {
-    fontFamily: fonts.body,
-    fontSize: 14,
-    lineHeight: 21,
-    textAlign: 'center',
-    color: colors.dust,
-  },
-  userBubble: {
-    alignSelf: 'flex-end',
-    maxWidth: '80%',
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    borderTopLeftRadius: 18,
-    borderTopRightRadius: 18,
-    borderBottomRightRadius: 6,
-    borderBottomLeftRadius: 18,
-    backgroundColor: colors.chalk,
-  },
-  userText: { fontFamily: fonts.body, fontSize: 15, lineHeight: 22, color: colors.slate },
-  assistant: { alignSelf: 'stretch' },
-  notice: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 2 },
-  noticeText: { fontFamily: fonts.mono, fontSize: 12, color: colors.dust },
-  errorCard: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 10,
-    padding: 12,
-    borderRadius: radii.button,
-    borderWidth: 1,
-    borderColor: colors.dangerBorder,
-    backgroundColor: colors.dangerBg,
-  },
-  errorText: { flex: 1, fontFamily: fonts.body, fontSize: 14, lineHeight: 20, color: colors.danger },
-  thinking: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 4 },
-  thinkingText: { fontFamily: fonts.body, fontSize: 13, color: colors.dust },
 
   composerWrap: {
     paddingTop: 10,
