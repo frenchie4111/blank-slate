@@ -29,6 +29,7 @@ import {
 import * as projectStore from '../project/store';
 import type { Project } from '../project/store';
 import { FilesPanel } from './FileViewer';
+import { Markdown } from './Markdown';
 import { SettingsScreen } from './SettingsScreen';
 import { getModel } from '../storage/keyStore';
 import { readFile } from '../vfs/vfs';
@@ -374,7 +375,13 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
                       and extract the button into components/Button.tsx".
                     </Text>
                   ) : (
-                    entries.map((e) => <EntryView key={e.id} entry={e} />)
+                    entries.map((e, i) => (
+                      <EntryView
+                        key={e.id}
+                        entry={e}
+                        streaming={running && i === entries.length - 1}
+                      />
+                    ))
                   )}
                   {running ? (
                     <View style={styles.statusRow}>
@@ -640,7 +647,15 @@ function ProjectSwitcher({
   );
 }
 
-function EntryView({ entry }: { entry: Entry }) {
+// Memoized so a streaming chunk only re-renders the entry it touched —
+// handleEvent keeps object identity for every other entry.
+const EntryView = React.memo(function EntryView({
+  entry,
+  streaming,
+}: {
+  entry: Entry;
+  streaming: boolean;
+}) {
   if (entry.kind === 'user') {
     return (
       <View style={[styles.bubble, styles.bubbleUser]}>
@@ -650,9 +665,7 @@ function EntryView({ entry }: { entry: Entry }) {
   }
   if (entry.kind === 'assistant') {
     return (
-      <View style={[styles.bubble, styles.bubbleAssistant]}>
-        <Text style={styles.bubbleTextAssistant}>{entry.text || '…'}</Text>
-      </View>
+      <AssistantBubble text={entry.text} streaming={streaming} />
     );
   }
   if (entry.kind === 'error') {
@@ -666,6 +679,24 @@ function EntryView({ entry }: { entry: Entry }) {
     return <ServerToolCard entry={entry} />;
   }
   return <ToolCard entry={entry} />;
+});
+
+function AssistantBubble({ text, streaming }: { text: string; streaming: boolean }) {
+  // Models sometimes emit whitespace-only text blocks or pad replies with
+  // dozens of blank lines; neither should produce a bubble.
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return streaming ? (
+      <View style={[styles.bubble, styles.bubbleAssistant]}>
+        <Text style={styles.bubbleTextAssistant}>…</Text>
+      </View>
+    ) : null;
+  }
+  return (
+    <View style={[styles.bubble, styles.bubbleAssistant]}>
+      <Markdown text={trimmed} />
+    </View>
+  );
 }
 
 function ServerToolCard({ entry }: { entry: ServerToolEntry }) {
