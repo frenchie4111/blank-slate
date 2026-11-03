@@ -31,7 +31,11 @@ import { colors, fonts, radii, type } from '../theme';
 type Props = {
   projects: Project[];
   currentId: string | null;
-  onClose: () => void;
+  // An agent turn is running in the current project.
+  running: boolean;
+  // Stops that turn and resolves once it can no longer write files.
+  onStopBuild: () => Promise<void>;
+  onSettings: () => void;
   // Switches to the project (if needed) and shows the running app.
   onOpen: (id: string) => void;
   // A freshly created project: switch to it and start chatting.
@@ -40,26 +44,58 @@ type Props = {
 
 type Draft = { mode: 'create' } | { mode: 'edit'; project: Project };
 
-export function YourAppsScreen({ projects, currentId, onClose, onOpen, onCreated }: Props) {
+export function YourAppsScreen({
+  projects,
+  currentId,
+  running,
+  onStopBuild,
+  onSettings,
+  onOpen,
+  onCreated,
+}: Props) {
   const insets = useSafeAreaInsets();
   const [editing, setEditing] = React.useState(false);
   const [draft, setDraft] = React.useState<Draft | null>(null);
   const [pendingDelete, setPendingDelete] = React.useState<Project | null>(null);
   const [busy, setBusy] = React.useState(false);
+  // Leaving the current app mid-build asks first, then stops the build.
+  const [pendingStop, setPendingStop] = React.useState<(() => void) | null>(null);
 
   const current = projects.find((p) => p.id === currentId) ?? null;
   const canDelete = projects.length > 1;
 
+  const afterStop = (action: () => void) => {
+    if (running) setPendingStop(() => action);
+    else action();
+  };
+
+  const confirmStop = async () => {
+    const action = pendingStop;
+    if (!action || busy) return;
+    setBusy(true);
+    try {
+      await onStopBuild();
+    } finally {
+      setBusy(false);
+      setPendingStop(null);
+    }
+    action();
+  };
+
   const handleTile = (p: Project) => {
     if (busy) return;
     if (editing) setDraft({ mode: 'edit', project: p });
-    else onOpen(p.id);
+    else if (p.id === currentId) onOpen(p.id);
+    else afterStop(() => onOpen(p.id));
   };
+
+  const deletingCurrentBuild = running && pendingDelete?.id === currentId;
 
   const confirmDelete = async () => {
     if (!pendingDelete || busy) return;
     setBusy(true);
     try {
+      if (pendingDelete.id === currentId) await onStopBuild();
       await projectStore.remove(pendingDelete.id);
     } finally {
       setBusy(false);
@@ -90,12 +126,12 @@ export function YourAppsScreen({ projects, currentId, onClose, onOpen, onCreated
           </Text>
         </Pressable>
         <Pressable
-          onPress={onClose}
-          style={({ pressed }) => [styles.closeBtn, pressed && styles.pressed]}
+          onPress={onSettings}
+          style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]}
           accessibilityRole="button"
-          accessibilityLabel="Close"
+          accessibilityLabel="Settings"
         >
-          <Ionicons name="close" size={20} color={colors.chalk} />
+          <Ionicons name="settings-outline" size={20} color={colors.dust} />
         </Pressable>
       </View>
 
@@ -174,6 +210,7 @@ export function YourAppsScreen({ projects, currentId, onClose, onOpen, onCreated
 
       <AppSheet
         draft={draft}
+        stopsBuild={running}
         onClose={() => setDraft(null)}
         onCreated={(id) => {
           setDraft(null);
@@ -192,6 +229,7 @@ export function YourAppsScreen({ projects, currentId, onClose, onOpen, onCreated
             <Text style={styles.dialogTitle}>Delete {pendingDelete?.name}?</Text>
             <Text style={styles.dialogBody}>
               Its code and chat are removed from this phone. This can't be undone.
+              {deletingCurrentBuild ? ' The build running in it will be stopped.' : ''}
             </Text>
             <View style={styles.dialogActions}>
               <Pressable
@@ -220,6 +258,48 @@ export function YourAppsScreen({ projects, currentId, onClose, onOpen, onCreated
           </View>
         </View>
       </Modal>
+
+      <Modal
+        transparent
+        visible={!!pendingStop}
+        animationType="fade"
+        onRequestClose={() => setPendingStop(null)}
+      >
+        <View style={styles.backdrop}>
+          <View style={styles.dialog}>
+            <Text style={styles.dialogTitle}>Stop the current build?</Text>
+            <Text style={styles.dialogBody}>
+              An agent working on{' '}
+              <Text style={styles.dialogBodyStrong}>{current?.name ?? 'this app'}</Text> is still
+              working. Switching apps will stop it
+            </Text>
+            <View style={styles.dialogActions}>
+              <Pressable
+                style={({ pressed }) => [styles.btn, styles.btnSecondary, pressed && styles.pressed]}
+                onPress={() => setPendingStop(null)}
+                disabled={busy}
+              >
+                <Text style={styles.btnSecondaryText}>Keep building</Text>
+              </Pressable>
+              <Pressable
+                style={({ pressed }) => [
+                  styles.btn,
+                  styles.btnDanger,
+                  (busy || pressed) && styles.pressed,
+                ]}
+                onPress={confirmStop}
+                disabled={busy}
+              >
+                {busy ? (
+                  <ActivityIndicator size="small" color={colors.danger} />
+                ) : (
+                  <Text style={styles.btnDangerText}>Stop and switch</Text>
+                )}
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -227,10 +307,12 @@ export function YourAppsScreen({ projects, currentId, onClose, onOpen, onCreated
 // Bottom sheet for naming a new app or renaming / restyling an existing one.
 function AppSheet({
   draft,
+  stopsBuild,
   onClose,
   onCreated,
 }: {
   draft: Draft | null;
+  stopsBuild: boolean;
   onClose: () => void;
   onCreated: (id: string) => void;
 }) {
@@ -341,6 +423,10 @@ function AppSheet({
             })}
           </View>
 
+          {stopsBuild && draft?.mode === 'create' ? (
+            <Text style={styles.sheetNote}>Creating an app stops the build that's running.</Text>
+          ) : null}
+
           <View style={styles.dialogActions}>
             <Pressable
               style={({ pressed }) => [styles.btn, styles.btnSecondary, pressed && styles.pressed]}
@@ -394,7 +480,7 @@ const styles = StyleSheet.create({
   title: { fontFamily: fonts.display, fontSize: 30, letterSpacing: -0.3, color: colors.chalk },
   count: { fontFamily: fonts.body, fontSize: 13, color: colors.dust },
   headerBtn: {
-    height: 40,
+    height: 44,
     paddingHorizontal: 16,
     borderRadius: radii.input,
     borderWidth: 1,
@@ -405,10 +491,13 @@ const styles = StyleSheet.create({
   headerBtnOn: { backgroundColor: colors.accent, borderColor: colors.accent },
   headerBtnText: { fontFamily: fonts.bodySemi, fontSize: 14, color: colors.chalk },
   headerBtnTextOn: { color: colors.slate },
-  closeBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: radii.input,
+  iconBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: radii.button,
+    borderWidth: 1,
+    borderColor: colors.lineStrong,
+    backgroundColor: colors.board,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -512,6 +601,7 @@ const styles = StyleSheet.create({
   },
   dialogTitle: { fontFamily: fonts.displaySemi, fontSize: 20, color: colors.chalk },
   dialogBody: { fontFamily: fonts.body, fontSize: 14, lineHeight: 21, color: colors.chalkMuted },
+  dialogBodyStrong: { fontFamily: fonts.bodySemi, color: colors.chalk },
   dialogActions: { flexDirection: 'row', gap: 10, marginTop: 10 },
   btn: {
     flex: 1,
@@ -550,6 +640,7 @@ const styles = StyleSheet.create({
   },
   sheetHead: { flexDirection: 'row', alignItems: 'center', gap: 14 },
   sheetTitle: { ...type.header, fontSize: 22, color: colors.chalk },
+  sheetNote: { fontFamily: fonts.body, fontSize: 13, color: colors.dust },
   input: {
     height: 52,
     paddingHorizontal: 16,

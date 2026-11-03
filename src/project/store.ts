@@ -29,7 +29,8 @@ export default function App() {
       <Text style={styles.title}>Blank Slate</Text>
       <Text style={styles.body}>
         Tap the floating badge to chat with the agent about what this app
-        should become. Drag it anywhere if it's in the way.
+        should become. Hold it to see all your apps, or drag it anywhere if
+        it's in the way.
       </Text>
     </View>
   );

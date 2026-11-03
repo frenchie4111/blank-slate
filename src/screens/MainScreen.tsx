@@ -49,7 +49,11 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
   const [settingsVisible, setSettingsVisible] = React.useState(false);
   const [projects, setProjects] = React.useState<Project[]>([]);
   const [currentId, setCurrentId] = React.useState<string | null>(null);
-  const [appsOpen, setAppsOpen] = React.useState(false);
+  // Every cold launch lands on the Your apps home screen.
+  const [appsOpen, setAppsOpen] = React.useState(true);
+  // The generated app isn't mounted (or evaluated) until one is opened from
+  // home, so a crashing app can never get in the way of reaching home.
+  const [appOpened, setAppOpened] = React.useState(false);
   const [fileCount, setFileCount] = React.useState(0);
   const [activeTab, setActiveTab] = React.useState<'chat' | 'files'>('chat');
   const [renderRevision, setRenderRevision] = React.useState(0);
@@ -57,6 +61,8 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
 
   const historyRef = React.useRef<ChatMessage[]>([]);
   const runRef = React.useRef<AgentRun | null>(null);
+  // The whole in-flight turn, including its bookkeeping after the agent stops.
+  const turnRef = React.useRef<Promise<void> | null>(null);
   const stoppedRef = React.useRef(false);
   const scrollRef = React.useRef<ScrollView | null>(null);
   const activeProjectRef = React.useRef<string | null>(null);
@@ -124,9 +130,10 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
     };
   }, [currentId]);
 
+  // Takes the project explicitly: setEntries updaters can run after a switch
+  // has already moved activeProjectRef on.
   const persist = React.useCallback(
-    (history: ChatMessage[], nextEntries: Entry[]) => {
-      const id = activeProjectRef.current;
+    (id: string | null, history: ChatMessage[], nextEntries: Entry[]) => {
       if (!id) return;
       saveChat(id, { history, entries: nextEntries }).catch(() => {});
     },
@@ -207,9 +214,8 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
     }
   }, []);
 
-  const runTurn = React.useCallback(
+  const doTurn = React.useCallback(
     async (text: string): Promise<void> => {
-      if (!text.trim()) return;
       setRunning(true);
       stoppedRef.current = false;
       setEntries((prev) => [...prev, { kind: 'user', id: `u-${prev.length}`, text }]);
@@ -217,6 +223,7 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
       const priorHistory = historyRef.current;
       try {
         const model = await getModel();
+        if (stoppedRef.current) throw new Error('Aborted');
         const run = runAgentTurn(
           { apiKey, model, sessionId: `blank-slate:${projectAtStart ?? 'default'}` },
           priorHistory,
@@ -228,7 +235,7 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
         historyRef.current = nextHistory;
         if (projectAtStart === activeProjectRef.current) {
           setEntries((latest) => {
-            persist(nextHistory, latest);
+            persist(projectAtStart, nextHistory, latest);
             return latest;
           });
         }
@@ -249,7 +256,7 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
               ...prev,
               { kind: 'notice', id: `stop-${prev.length}`, text: 'Stopped' },
             ];
-            persist(nextHistory, next);
+            persist(projectAtStart, nextHistory, next);
             return next;
           });
         }
@@ -261,11 +268,36 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
     [apiKey, handleEvent, persist],
   );
 
+  const runTurn = React.useCallback(
+    async (text: string): Promise<void> => {
+      if (!text.trim() || turnRef.current) return;
+      const turn = doTurn(text);
+      turnRef.current = turn;
+      try {
+        await turn;
+      } finally {
+        if (turnRef.current === turn) turnRef.current = null;
+      }
+    },
+    [doTurn],
+  );
+
   const stop = () => {
     if (!runRef.current) return;
     stoppedRef.current = true;
     runRef.current.abort();
   };
+
+  // Stops the running turn and waits until it has fully settled. Tools await
+  // their VFS writes, and the VFS writes into whichever project is current, so
+  // this must finish before any switch or delete of the current project.
+  const stopAndWait = React.useCallback(async () => {
+    const turn = turnRef.current;
+    if (!turn) return;
+    stoppedRef.current = true;
+    runRef.current?.abort();
+    await turn;
+  }, []);
 
   const send = async () => {
     const text = input.trim();
@@ -292,22 +324,25 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
     setTimeout(() => setRenderError(null), 0);
   }, []);
 
-  const openApps = () => {
-    if (running) return;
-    setAppsOpen(true);
-  };
+  const openApps = () => setAppsOpen(true);
 
-  const openApp = async (id: string) => {
-    if (id !== currentId) await projectStore.switchTo(id);
-    setAppsOpen(false);
+  const showApp = () => {
+    setAppOpened(true);
     setChatVisible(false);
   };
 
-  const startNewApp = async (id: string) => {
-    await projectStore.switchTo(id);
+  // Leaves home for a project: its preview, or its chat when there's nothing
+  // to look at yet (a new or untouched app).
+  const enterApp = async (id: string, opts: { chat?: boolean } = {}) => {
+    if (id !== activeProjectRef.current) {
+      await stopAndWait();
+      await projectStore.switchTo(id);
+    }
+    const chat = opts.chat || (await isUntouched(id));
+    setAppOpened(true);
     setAppsOpen(false);
-    setActiveTab('chat');
-    setChatVisible(true);
+    if (chat) setActiveTab('chat');
+    setChatVisible(chat);
   };
 
   if (!ready) {
@@ -324,19 +359,22 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
   return (
     <View style={styles.root}>
       <View style={styles.appLayer}>
-        <DynamicView
-          revision={renderRevision}
-          onError={handleRenderError}
-          onClear={handleRenderClear}
-          onFix={fixRenderErrorNow}
-        />
+        {appOpened ? (
+          <DynamicView
+            revision={renderRevision}
+            onError={handleRenderError}
+            onClear={handleRenderClear}
+            onFix={fixRenderErrorNow}
+          />
+        ) : null}
       </View>
 
-      {chatVisible ? null : (
+      {chatVisible || appsOpen ? null : (
         <DraggableBadge
           size={56}
           style={styles.floatingBadge}
           onPress={() => setChatVisible(true)}
+          onLongPress={openApps}
           accessibilityLabel="Open Blank Slate chat"
         >
           <LogoMark size={24} />
@@ -351,37 +389,26 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
           >
             <View style={styles.chatHeader}>
               <Pressable
-                onPress={() => setChatVisible(false)}
-                style={({ pressed }) => [styles.logoBtn, pressed && styles.pressed]}
-                accessibilityRole="button"
-                accessibilityLabel="Back to app"
-              >
-                <LogoMark size={20} />
-              </Pressable>
-              <Pressable
                 onPress={openApps}
-                style={({ pressed }) => [styles.titleBtn, pressed && styles.pressed]}
-                disabled={running}
+                style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]}
                 accessibilityRole="button"
                 accessibilityLabel="Your apps"
               >
+                <Ionicons name="home-outline" size={20} color={colors.dust} />
+              </Pressable>
+              <View style={styles.title} accessibilityRole="header">
                 {currentProject ? <AppIcon project={currentProject} size={24} /> : null}
                 <Text style={styles.projectTitle} numberOfLines={1}>
                   {currentProject?.name ?? 'Blank Slate'}
                 </Text>
-                <Ionicons
-                  name="chevron-down"
-                  size={16}
-                  color={running ? colors.lineFaint : colors.dust}
-                />
-              </Pressable>
+              </View>
               <Pressable
-                onPress={() => setSettingsVisible(true)}
+                onPress={showApp}
                 style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]}
                 accessibilityRole="button"
-                accessibilityLabel="Settings"
+                accessibilityLabel="View app"
               >
-                <Ionicons name="options-outline" size={21} color={colors.dust} />
+                <Ionicons name="eye-outline" size={21} color={colors.dust} />
               </Pressable>
             </View>
 
@@ -493,9 +520,11 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
           <YourAppsScreen
             projects={projects}
             currentId={currentId}
-            onClose={() => setAppsOpen(false)}
-            onOpen={openApp}
-            onCreated={startNewApp}
+            running={running}
+            onStopBuild={stopAndWait}
+            onSettings={() => setSettingsVisible(true)}
+            onOpen={(id) => enterApp(id)}
+            onCreated={(id) => enterApp(id, { chat: true })}
           />
         </View>
       ) : null}
@@ -641,6 +670,17 @@ const EntryView = React.memo(function EntryView({
   );
 });
 
+// Nothing built yet: just the starter App.tsx and an empty chat. Reads the
+// current project, so call it after switching. Matches on the starter's title
+// line so apps seeded with older starter copy still count.
+async function isUntouched(id: string): Promise<boolean> {
+  const [files, chat] = await Promise.all([vfs.listFiles(), loadChat(id)]);
+  if (chat.history.length > 0 || chat.entries.length > 0) return false;
+  if (files.length !== 1 || files[0] !== 'App.tsx') return false;
+  const code = await vfs.readFile('App.tsx');
+  return !!code && code.includes('<Text style={styles.title}>Blank Slate</Text>');
+}
+
 function formatRenderErrorPrompt(err: RenderError): string {
   const label = err.stage === 'runtime' ? 'crashed at runtime' : `failed during ${err.stage}`;
   const trimmedStack = err.stack
@@ -679,27 +719,17 @@ const styles = StyleSheet.create({
     gap: 8,
     paddingTop: 8,
     paddingBottom: 8,
-    paddingLeft: space.chatGutter,
-    paddingRight: 12,
+    paddingHorizontal: 12,
   },
-  logoBtn: {
-    width: 44,
-    height: 44,
-    borderRadius: radii.button,
-    borderWidth: 1,
-    borderColor: colors.lineStrong,
-    backgroundColor: colors.board,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  titleBtn: {
+  title: {
     flex: 1,
     minWidth: 0,
     height: 44,
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
     gap: 8,
-    paddingHorizontal: 8,
+    paddingHorizontal: 4,
   },
   projectTitle: {
     flexShrink: 1,
@@ -712,6 +742,9 @@ const styles = StyleSheet.create({
     width: 44,
     height: 44,
     borderRadius: radii.button,
+    borderWidth: 1,
+    borderColor: colors.lineStrong,
+    backgroundColor: colors.board,
     alignItems: 'center',
     justifyContent: 'center',
   },

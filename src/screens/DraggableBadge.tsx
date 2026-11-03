@@ -17,6 +17,8 @@ const POSITION_KEY = 'blank-slate.badge-position';
 const DRAG_THRESHOLD = 6;
 // Gap between the badge and the safe-area edge it docks against.
 const EDGE_GAP = 8;
+// Hold this long (without dragging) to trigger onLongPress.
+const LONG_PRESS_MS = 450;
 
 type Side = 'left' | 'right';
 // yFrac is a 0..1 fraction of the usable vertical range, so the badge lands
@@ -32,6 +34,7 @@ let cachedPosition: StoredPosition | null = null;
 type Props = {
   size: number;
   onPress: () => void;
+  onLongPress?: () => void;
   accessibilityLabel: string;
   style?: StyleProp<ViewStyle>;
   children: React.ReactNode;
@@ -41,12 +44,12 @@ function clamp(v: number, min: number, max: number) {
   return Math.min(Math.max(v, min), Math.max(min, max));
 }
 
-function haptic(kind: 'pickup' | 'drop') {
+function haptic(kind: 'pickup' | 'drop' | 'hold') {
   if (Platform.OS === 'web') return;
   const p =
-    kind === 'pickup'
-      ? Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
-      : Haptics.selectionAsync();
+    kind === 'drop'
+      ? Haptics.selectionAsync()
+      : Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
   p.catch(() => {});
 }
 
@@ -64,12 +67,20 @@ function parseStored(raw: string | null): StoredPosition | null {
 /**
  * Floating round badge that can be dragged anywhere and snaps to the nearest
  * left/right edge on release. A touch that moves less than DRAG_THRESHOLD is
- * treated as a tap. Position persists across launches.
+ * treated as a tap; holding still for LONG_PRESS_MS fires onLongPress instead.
+ * Position persists across launches.
  *
  * Built on PanResponder + Animated (no gesture-handler/reanimated) so it
  * ships over the air and works on react-native-web with mouse input.
  */
-export function DraggableBadge({ size, onPress, accessibilityLabel, style, children }: Props) {
+export function DraggableBadge({
+  size,
+  onPress,
+  onLongPress,
+  accessibilityLabel,
+  style,
+  children,
+}: Props) {
   const { width, height } = useWindowDimensions();
   const insets = useSafeAreaInsets();
 
@@ -97,6 +108,16 @@ export function DraggableBadge({ size, onPress, accessibilityLabel, style, child
   const lastRef = React.useRef({ x: 0, y: 0 });
   const onPressRef = React.useRef(onPress);
   onPressRef.current = onPress;
+  const onLongPressRef = React.useRef(onLongPress);
+  onLongPressRef.current = onLongPress;
+  const holdTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const heldRef = React.useRef(false);
+
+  const cancelHold = React.useCallback(() => {
+    if (holdTimerRef.current) clearTimeout(holdTimerRef.current);
+    holdTimerRef.current = null;
+  }, []);
+  React.useEffect(() => cancelHold, [cancelHold]);
 
   const toXY = React.useCallback((p: StoredPosition, b = boundsRef.current) => {
     return {
@@ -162,10 +183,21 @@ export function DraggableBadge({ size, onPress, accessibilityLabel, style, child
             startRef.current = v;
           });
           draggingRef.current = false;
+          heldRef.current = false;
+          cancelHold();
+          if (onLongPressRef.current) {
+            holdTimerRef.current = setTimeout(() => {
+              holdTimerRef.current = null;
+              heldRef.current = true;
+              haptic('hold');
+              onLongPressRef.current?.();
+            }, LONG_PRESS_MS);
+          }
         },
         onPanResponderMove: (_e, g) => {
           if (!draggingRef.current) {
-            if (Math.hypot(g.dx, g.dy) < DRAG_THRESHOLD) return;
+            if (heldRef.current || Math.hypot(g.dx, g.dy) < DRAG_THRESHOLD) return;
+            cancelHold();
             draggingRef.current = true;
             haptic('pickup');
             Animated.spring(scale, { toValue: 1.12, useNativeDriver: false, friction: 6 }).start();
@@ -178,21 +210,23 @@ export function DraggableBadge({ size, onPress, accessibilityLabel, style, child
           pos.setValue(lastRef.current);
         },
         onPanResponderRelease: () => {
+          cancelHold();
           if (draggingRef.current) {
             draggingRef.current = false;
             settle();
-          } else {
+          } else if (!heldRef.current) {
             onPressRef.current();
           }
         },
         onPanResponderTerminate: () => {
+          cancelHold();
           if (draggingRef.current) {
             draggingRef.current = false;
             settle();
           }
         },
       }),
-    [pos, scale, settle],
+    [pos, scale, settle, cancelHold],
   );
 
   return (
@@ -202,6 +236,10 @@ export function DraggableBadge({ size, onPress, accessibilityLabel, style, child
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel}
       accessibilityHint="Double tap to open. Drag to move."
+      accessibilityActions={onLongPress ? [{ name: 'longpress', label: 'Your apps' }] : undefined}
+      onAccessibilityAction={(e) => {
+        if (e.nativeEvent.actionName === 'longpress') onLongPress?.();
+      }}
       onAccessibilityTap={onPress}
       style={[
         style,
