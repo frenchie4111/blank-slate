@@ -29,6 +29,8 @@ import {
 import * as projectStore from '../project/store';
 import type { Project } from '../project/store';
 import { colors, fonts, radii, type } from '../theme';
+import { runtimePlatform } from '../platform/desktop';
+import { useWideLayout } from '../theme/layout';
 
 type Props = {
   projects: Project[];
@@ -59,6 +61,7 @@ export function YourAppsScreen({
   onChangeIcon,
 }: Props) {
   const insets = useSafeAreaInsets();
+  const wide = useWideLayout();
   const [editing, setEditing] = React.useState(false);
   const [draft, setDraft] = React.useState<Draft | null>(null);
   const [pendingDelete, setPendingDelete] = React.useState<Project | null>(null);
@@ -135,7 +138,7 @@ export function YourAppsScreen({
         <View style={styles.headerText}>
           <Text style={styles.title}>Your apps</Text>
           <Text style={styles.count}>
-            {projects.length} app{projects.length === 1 ? '' : 's'} on this phone
+            {projects.length} app{projects.length === 1 ? '' : 's'} on this {runtimePlatform() === 'desktop' ? 'computer' : 'phone'}
           </Text>
         </View>
         <Pressable
@@ -165,7 +168,7 @@ export function YourAppsScreen({
         {projects.map((p) => {
           const isCurrent = p.id === currentId;
           return (
-            <View key={p.id} style={styles.cell}>
+            <View key={p.id} style={[styles.cell, wide && styles.cellWide]}>
               <View style={editing && styles.tilted}>
                 <Pressable
                   onPress={() => handleTile(p)}
@@ -209,7 +212,7 @@ export function YourAppsScreen({
             </View>
           );
         })}
-        <View style={styles.cell}>
+        <View style={[styles.cell, wide && styles.cellWide]}>
           <Pressable
             onPress={() => setDraft({ mode: 'create' })}
             style={({ pressed }) => [styles.tile, styles.newTile, pressed && styles.pressed]}
@@ -224,7 +227,7 @@ export function YourAppsScreen({
 
       {current && !editing ? (
         <View style={[styles.resumeWrap, { paddingBottom: Math.max(insets.bottom, 16) + 10 }]}>
-          <View style={styles.resume}>
+          <View style={[styles.resume, wide && styles.resumeWide]}>
             <AppIcon project={current} size={44} />
             <View style={styles.resumeText}>
               <Text style={styles.resumeName} numberOfLines={1}>
@@ -442,6 +445,7 @@ function AppSheet({
   onCreated: (id: string) => void;
 }) {
   const insets = useSafeAreaInsets();
+  const wide = useWideLayout();
   const [name, setName] = React.useState('');
   const [tint, setTint] = React.useState<Tint>('yellow');
   const [glyph, setGlyph] = React.useState<Glyph | null>(null);
@@ -484,14 +488,25 @@ function AppSheet({
   };
 
   return (
-    <Modal transparent visible={!!draft} animationType="slide" onRequestClose={onClose}>
+    <Modal
+      transparent
+      visible={!!draft}
+      animationType={wide ? 'fade' : 'slide'}
+      onRequestClose={onClose}
+    >
       <KeyboardAvoidingView
-        style={styles.sheetBackdrop}
+        style={[styles.sheetBackdrop, wide && styles.sheetBackdropWide]}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
         <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
-        <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 16) + 8 }]}>
-          <View style={styles.grabber} />
+        <View
+          style={[
+            styles.sheet,
+            { paddingBottom: Math.max(insets.bottom, 16) + 8 },
+            wide && styles.sheetWide,
+          ]}
+        >
+          {wide ? null : <View style={styles.grabber} />}
           <View style={styles.sheetHead}>
             <AppIcon tint={tint} glyph={shownGlyph} size={56} />
             <Text style={styles.sheetTitle}>{draft?.mode === 'edit' ? 'Edit app' : 'New app'}</Text>
@@ -635,6 +650,8 @@ const styles = StyleSheet.create({
     paddingBottom: 24,
   },
   cell: { width: '25%', alignItems: 'center', gap: 8 },
+  // Fixed-width cells on desktop, so the grid fills left to right.
+  cellWide: { width: 112 },
   tilted: { transform: [{ rotate: '-2deg' }] },
   tile: {
     width: 72,
@@ -695,6 +712,7 @@ const styles = StyleSheet.create({
     borderColor: colors.line,
     backgroundColor: colors.board,
   },
+  resumeWide: { alignSelf: 'center', width: '100%', maxWidth: 560 },
   resumeText: { flex: 1, minWidth: 0, gap: 2 },
   resumeName: { fontFamily: fonts.bodySemi, fontSize: 14, color: colors.chalk },
   resumeMeta: { fontFamily: fonts.body, fontSize: 12, color: colors.dust },
@@ -775,6 +793,7 @@ const styles = StyleSheet.create({
   menuLabel: { fontFamily: fonts.body, fontSize: 15 },
 
   sheetBackdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(10,10,12,0.72)' },
+  sheetBackdropWide: { justifyContent: 'center', alignItems: 'center', padding: 24 },
   sheet: {
     gap: 14,
     paddingHorizontal: 20,
@@ -785,6 +804,14 @@ const styles = StyleSheet.create({
     borderBottomWidth: 0,
     borderColor: colors.line,
     backgroundColor: colors.board,
+  },
+  // A centered dialog on desktop rather than a bottom sheet.
+  sheetWide: {
+    width: '100%',
+    maxWidth: 480,
+    paddingTop: 20,
+    borderRadius: radii.sheet,
+    borderBottomWidth: 1,
   },
   grabber: {
     alignSelf: 'center',

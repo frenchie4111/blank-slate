@@ -215,7 +215,12 @@ export function DraggableBadge({
             draggingRef.current = false;
             settle();
           } else if (!heldRef.current) {
-            onPressRef.current();
+            // On web a mouse release is followed by a `click` on whatever is
+            // under the pointer by then. Opening the chat first would put its
+            // home button there and the click would press it too, so wait for
+            // the click to pass.
+            if (Platform.OS === 'web') setTimeout(() => onPressRef.current(), 0);
+            else onPressRef.current();
           }
         },
         onPanResponderTerminate: () => {

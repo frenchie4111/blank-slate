@@ -30,6 +30,7 @@ import * as projectStore from '../project/store';
 import type { Project } from '../project/store';
 import { getAutoAppIcons, getModel } from '../storage/keyStore';
 import { colors, fonts, radii, space } from '../theme';
+import { SIDEBAR_WIDTH, useWideLayout } from '../theme/layout';
 import { LogoMark } from '../theme/LogoMark';
 import * as vfs from '../vfs/vfs';
 import { ChatList, newChatScrollMemory, type ChatScrollMemory } from './ChatList';
@@ -43,12 +44,15 @@ type Props = { apiKey: string; onResetKey: () => void };
 
 export function MainScreen({ apiKey, onResetKey }: Props) {
   const insets = useSafeAreaInsets();
+  const wide = useWideLayout();
   const [entries, setEntries] = React.useState<Entry[]>([]);
   const [input, setInput] = React.useState('');
   const [running, setRunning] = React.useState(false);
   const [reasoningTokens, setReasoningTokens] = React.useState(0);
   const [ready, setReady] = React.useState(false);
   const [chatVisible, setChatVisible] = React.useState(false);
+  // Desktop only: the chat sidebar can be hidden to give the app the window.
+  const [sidebarOpen, setSidebarOpen] = React.useState(true);
   const [settingsVisible, setSettingsVisible] = React.useState(false);
   const [projects, setProjects] = React.useState<Project[]>([]);
   const [currentId, setCurrentId] = React.useState<string | null>(null);
@@ -326,6 +330,7 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
     const err = renderErrorRef.current;
     if (!err || running) return;
     setChatVisible(true);
+    setSidebarOpen(true);
     setActiveTab('chat');
     runTurn(formatRenderErrorPrompt(err));
   }, [running, runTurn]);
@@ -364,6 +369,19 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
     };
   }, [handleRenderError, handleRenderClear]);
 
+  // Cmd+\ (Ctrl+\ off the Mac) shows and hides the sidebar on desktop.
+  React.useEffect(() => {
+    if (!wide) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === '\\' && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        setSidebarOpen((open) => !open);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [wide]);
+
   const askAgent = React.useCallback((text: string) => {
     setInput(text);
     setActiveTab('chat');
@@ -401,8 +419,158 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
   const currentProject = projects.find((p) => p.id === currentId) ?? null;
   const canSend = !!input.trim() && !running;
 
+  const chatPanel = (
+    <>
+      <View style={styles.chatHeader}>
+        <Pressable
+          onPress={openApps}
+          style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]}
+          accessibilityRole="button"
+          accessibilityLabel="Your apps"
+        >
+          <Ionicons name="home-outline" size={20} color={colors.dust} />
+        </Pressable>
+        <ProjectTitle key={currentProject?.id ?? 'none'} project={currentProject} />
+        {wide ? (
+          <Pressable
+            onPress={() => setSidebarOpen(false)}
+            style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]}
+            accessibilityRole="button"
+            accessibilityLabel="Full-screen app"
+          >
+            <Ionicons name="expand-outline" size={19} color={colors.dust} />
+          </Pressable>
+        ) : (
+          <Pressable
+            onPress={showApp}
+            style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]}
+            accessibilityRole="button"
+            accessibilityLabel="View app"
+          >
+            <Ionicons name="eye-outline" size={21} color={colors.dust} />
+          </Pressable>
+        )}
+      </View>
+
+      <View style={styles.segmentWrap}>
+        <View style={styles.segment}>
+          <SegmentButton
+            label="Chat"
+            active={activeTab === 'chat'}
+            onPress={() => setActiveTab('chat')}
+          />
+          <SegmentButton
+            label={fileCount ? `Files · ${fileCount}` : 'Files'}
+            active={activeTab === 'files'}
+            onPress={() => setActiveTab('files')}
+          />
+          <SegmentButton
+            label="History"
+            active={activeTab === 'history'}
+            onPress={() => setActiveTab('history')}
+          />
+        </View>
+      </View>
+
+      {renderError ? (
+        <View style={styles.crash}>
+          <View style={styles.crashText}>
+            <Text style={styles.crashTitle}>
+              {renderError.stage === 'runtime'
+                ? 'App crashed while rendering'
+                : renderError.stage === 'handler'
+                  ? 'App threw an error'
+                  : `App failed during ${renderError.stage}`}
+            </Text>
+            <Text style={styles.crashMsg} numberOfLines={1}>
+              {renderError.stage === 'handler'
+                ? renderError.message
+                : `${renderError.path} · ${renderError.message}`}
+            </Text>
+          </View>
+          <Pressable
+            style={({ pressed }) => [
+              styles.fixBtn,
+              (running || pressed) && styles.pressed,
+            ]}
+            onPress={fixRenderErrorNow}
+            disabled={running}
+            accessibilityRole="button"
+          >
+            <Text style={styles.fixBtnText}>Fix it</Text>
+          </Pressable>
+        </View>
+      ) : null}
+
+      {activeTab === 'chat' ? (
+        <>
+          <ChatList
+            key={currentId ?? 'none'}
+            entries={entries}
+            running={running}
+            reasoningTokens={reasoningTokens}
+            memory={chatScrollRef}
+          />
+
+          <View style={[styles.composerWrap, { paddingBottom: 10 + insets.bottom }]}>
+            <View style={styles.composer}>
+              <TextInput
+                value={input}
+                onChangeText={setInput}
+                placeholder="Describe something to build"
+                placeholderTextColor={colors.dust}
+                style={styles.input}
+                multiline
+                // RN Web renders a 2-row textarea by default.
+                numberOfLines={Platform.OS === 'web' ? 1 : undefined}
+                onSubmitEditing={send}
+                returnKeyType="send"
+                blurOnSubmit
+                accessibilityLabel="Message"
+              />
+              {running ? (
+                <Pressable
+                  style={({ pressed }) => [styles.sendBtn, pressed && styles.pressed]}
+                  onPress={stop}
+                  accessibilityRole="button"
+                  accessibilityLabel="Stop"
+                >
+                  <View style={styles.stopSquare} />
+                </Pressable>
+              ) : (
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.sendBtn,
+                    !canSend && styles.sendBtnIdle,
+                    pressed && styles.pressed,
+                  ]}
+                  onPress={send}
+                  disabled={!canSend}
+                  accessibilityRole="button"
+                  accessibilityLabel="Send"
+                >
+                  <Ionicons
+                    name="arrow-up"
+                    size={22}
+                    color={canSend ? colors.slate : colors.dust}
+                  />
+                </Pressable>
+              )}
+            </View>
+          </View>
+        </>
+      ) : activeTab === 'files' ? (
+        <FilesPanel projectId={currentId} />
+      ) : (
+        <HistoryPanel projectId={currentId} appOpened={appOpened} onAskAgent={askAgent} />
+      )}
+    </>
+  );
+
   return (
-    <View style={styles.root}>
+    <View style={[styles.root, wide && styles.rootWide]}>
+      {wide && sidebarOpen ? <View style={styles.sidebar}>{chatPanel}</View> : null}
+
       <View style={styles.appLayer}>
         {appOpened ? (
           <DynamicView
@@ -414,11 +582,11 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
         ) : null}
       </View>
 
-      {chatVisible || appsOpen ? null : (
+      {(wide ? sidebarOpen : chatVisible) || appsOpen ? null : (
         <DraggableBadge
           size={56}
           style={styles.floatingBadge}
-          onPress={() => setChatVisible(true)}
+          onPress={() => (wide ? setSidebarOpen(true) : setChatVisible(true))}
           onLongPress={openApps}
           accessibilityLabel="Open Blank Slate chat"
         >
@@ -426,144 +594,13 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
         </DraggableBadge>
       )}
 
-      {chatVisible ? (
+      {wide ? null : chatVisible ? (
         <View style={styles.chatOverlay}>
           <KeyboardAvoidingView
             style={[StyleSheet.absoluteFill, { paddingTop: insets.top }]}
             behavior={Platform.OS === 'ios' ? 'padding' : undefined}
           >
-            <View style={styles.chatHeader}>
-              <Pressable
-                onPress={openApps}
-                style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]}
-                accessibilityRole="button"
-                accessibilityLabel="Your apps"
-              >
-                <Ionicons name="home-outline" size={20} color={colors.dust} />
-              </Pressable>
-              <ProjectTitle key={currentProject?.id ?? 'none'} project={currentProject} />
-              <Pressable
-                onPress={showApp}
-                style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]}
-                accessibilityRole="button"
-                accessibilityLabel="View app"
-              >
-                <Ionicons name="eye-outline" size={21} color={colors.dust} />
-              </Pressable>
-            </View>
-
-            <View style={styles.segmentWrap}>
-              <View style={styles.segment}>
-                <SegmentButton
-                  label="Chat"
-                  active={activeTab === 'chat'}
-                  onPress={() => setActiveTab('chat')}
-                />
-                <SegmentButton
-                  label={fileCount ? `Files · ${fileCount}` : 'Files'}
-                  active={activeTab === 'files'}
-                  onPress={() => setActiveTab('files')}
-                />
-                <SegmentButton
-                  label="History"
-                  active={activeTab === 'history'}
-                  onPress={() => setActiveTab('history')}
-                />
-              </View>
-            </View>
-
-            {renderError ? (
-              <View style={styles.crash}>
-                <View style={styles.crashText}>
-                  <Text style={styles.crashTitle}>
-                    {renderError.stage === 'runtime'
-                      ? 'App crashed while rendering'
-                      : renderError.stage === 'handler'
-                        ? 'App threw an error'
-                        : `App failed during ${renderError.stage}`}
-                  </Text>
-                  <Text style={styles.crashMsg} numberOfLines={1}>
-                    {renderError.stage === 'handler'
-                      ? renderError.message
-                      : `${renderError.path} · ${renderError.message}`}
-                  </Text>
-                </View>
-                <Pressable
-                  style={({ pressed }) => [
-                    styles.fixBtn,
-                    (running || pressed) && styles.pressed,
-                  ]}
-                  onPress={fixRenderErrorNow}
-                  disabled={running}
-                  accessibilityRole="button"
-                >
-                  <Text style={styles.fixBtnText}>Fix it</Text>
-                </Pressable>
-              </View>
-            ) : null}
-
-            {activeTab === 'chat' ? (
-              <>
-                <ChatList
-                  key={currentId ?? 'none'}
-                  entries={entries}
-                  running={running}
-                  reasoningTokens={reasoningTokens}
-                  memory={chatScrollRef}
-                />
-
-                <View style={[styles.composerWrap, { paddingBottom: 10 + insets.bottom }]}>
-                  <View style={styles.composer}>
-                    <TextInput
-                      value={input}
-                      onChangeText={setInput}
-                      placeholder="Describe something to build"
-                      placeholderTextColor={colors.dust}
-                      style={styles.input}
-                      multiline
-                      // RN Web renders a 2-row textarea by default.
-                      numberOfLines={Platform.OS === 'web' ? 1 : undefined}
-                      onSubmitEditing={send}
-                      returnKeyType="send"
-                      blurOnSubmit
-                      accessibilityLabel="Message"
-                    />
-                    {running ? (
-                      <Pressable
-                        style={({ pressed }) => [styles.sendBtn, pressed && styles.pressed]}
-                        onPress={stop}
-                        accessibilityRole="button"
-                        accessibilityLabel="Stop"
-                      >
-                        <View style={styles.stopSquare} />
-                      </Pressable>
-                    ) : (
-                      <Pressable
-                        style={({ pressed }) => [
-                          styles.sendBtn,
-                          !canSend && styles.sendBtnIdle,
-                          pressed && styles.pressed,
-                        ]}
-                        onPress={send}
-                        disabled={!canSend}
-                        accessibilityRole="button"
-                        accessibilityLabel="Send"
-                      >
-                        <Ionicons
-                          name="arrow-up"
-                          size={22}
-                          color={canSend ? colors.slate : colors.dust}
-                        />
-                      </Pressable>
-                    )}
-                  </View>
-                </View>
-              </>
-            ) : activeTab === 'files' ? (
-              <FilesPanel projectId={currentId} />
-            ) : (
-              <HistoryPanel projectId={currentId} appOpened={appOpened} onAskAgent={askAgent} />
-            )}
+            {chatPanel}
           </KeyboardAvoidingView>
         </View>
       ) : null}
@@ -767,6 +804,13 @@ function findLastIndex<T>(arr: T[], pred: (v: T) => boolean): number {
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.slate },
   loading: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.slate },
+  rootWide: { flexDirection: 'row' },
+  sidebar: {
+    width: SIDEBAR_WIDTH,
+    borderRightWidth: 1,
+    borderRightColor: colors.line,
+    backgroundColor: colors.slate,
+  },
   appLayer: { flex: 1 },
   pressed: { opacity: 0.7 },
   floatingBadge: {

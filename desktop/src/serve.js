@@ -133,6 +133,10 @@ function serve() {
             headers: {
                 "Content-Type":
                     TYPES[path.extname(file)] ?? "application/octet-stream",
+                // The markup names the hashed bundle, so a cached copy would
+                // keep loading the old one after a re-export or an update.
+                // The hashed files themselves are fine to cache.
+                ...(path.extname(file) === ".html" ? { "Cache-Control": "no-cache" } : {}),
                 ...ISOLATION,
             },
         });

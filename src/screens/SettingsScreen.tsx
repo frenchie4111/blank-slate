@@ -17,6 +17,7 @@ import { MODEL_OPTIONS } from '../agent/models';
 import { SettingSwitch } from '../components/SettingSwitch';
 import { getAutoAppIcons, getModel, setAutoAppIcons, setModel } from '../storage/keyStore';
 import { colors, fonts, radii, type } from '../theme';
+import { CONTENT_MAX_WIDTH, useWideLayout } from '../theme/layout';
 
 type Props = {
   onBack: () => void;
@@ -33,6 +34,7 @@ type CheckStatus =
 
 export function SettingsScreen({ onBack, onResetKey, apiKey }: Props) {
   const insets = useSafeAreaInsets();
+  const wide = useWideLayout();
   const {
     currentlyRunning,
     availableUpdate,
@@ -136,7 +138,11 @@ export function SettingsScreen({ onBack, onResetKey, apiKey }: Props) {
       </View>
 
       <ScrollView
-        contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + 34 }]}
+        contentContainerStyle={[
+          styles.scroll,
+          { paddingBottom: insets.bottom + 34 },
+          wide && styles.scrollWide,
+        ]}
         keyboardShouldPersistTaps="handled"
       >
         <Section title="Model">
@@ -408,6 +414,7 @@ const styles = StyleSheet.create({
   },
   headerTitle: { ...type.screenTitle, color: colors.chalk },
   scroll: { paddingHorizontal: 20, paddingTop: 16, gap: 24 },
+  scrollWide: { width: '100%', maxWidth: CONTENT_MAX_WIDTH, alignSelf: 'center' },
 
   section: { gap: 10 },
   card: {

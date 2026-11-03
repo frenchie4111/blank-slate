@@ -9,10 +9,14 @@
  * `extraMetadata` rather than written to disk, so a build never dirties the
  * tree.
  *
+ * `--no-notarize` signs with the Developer ID but skips notarization: quick,
+ * and the stable signature means a Keychain "Always Allow" survives rebuilds.
+ *
  * `--no-sign` builds without credentials: signing is ad-hoc (enough to run on
- * this Mac, not to distribute) and notarization is skipped. Every other
- * argument is passed straight through, so `--dir` and `--mac` work as they do
- * on `electron-builder` itself.
+ * this Mac, not to distribute) and notarization is skipped. Each ad-hoc build
+ * is a new identity to the Keychain, so expect an access prompt after every
+ * rebuild. Every other argument is passed straight through, so `--dir` and
+ * `--mac` work as they do on `electron-builder` itself.
  */
 
 import { spawn } from "node:child_process";
@@ -24,7 +28,8 @@ const here = dirname(fileURLToPath(import.meta.url));
 
 const args = process.argv.slice(2);
 const unsigned = args.includes("--no-sign");
-const passthrough = args.filter((arg) => arg !== "--no-sign");
+const unnotarized = unsigned || args.includes("--no-notarize");
+const passthrough = args.filter((arg) => arg !== "--no-sign" && arg !== "--no-notarize");
 
 /**
  * `.env`, loaded before anything reads the environment. electron-builder reads
@@ -69,7 +74,8 @@ const child = spawn(
     [
         `--config.extraMetadata.version=${version}`,
         // "-" is ad-hoc: the identity in package.json is not looked for.
-        ...(unsigned ? ["--config.mac.identity=-", "--config.mac.notarize=false"] : []),
+        ...(unsigned ? ["--config.mac.identity=-"] : []),
+        ...(unnotarized ? ["--config.mac.notarize=false"] : []),
         ...passthrough,
     ],
     { cwd: join(here, ".."), env, stdio: "inherit", shell: process.platform === "win32" },

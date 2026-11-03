@@ -10,7 +10,8 @@
   "scripts": {
     "renderer": "cd .. && npx expo export -p web --output-dir desktop/renderer",
     "start": "npm run renderer && electron .",
-    "pack": "npm run renderer && node scripts/build.mjs --dir --no-sign",
+    "pack": "npm run renderer && node scripts/build.mjs --dir --no-notarize",
+    "pack:unsigned": "npm run renderer && node scripts/build.mjs --dir --no-sign",
     "dist": "npm run renderer && node scripts/build.mjs"
   },
   "build": {
@@ -26,7 +27,7 @@
     ],
     "mac": {
       "category": "public.app-category.developer-tools",
-      "icon": "../assets/icon.png",
+      "icon": "../assets/icon-mac.png",
       "identity": "Michael Lyons (M7Y6TPCQ63)",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,

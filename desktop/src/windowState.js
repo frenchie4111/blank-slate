@@ -12,10 +12,15 @@ const { app, screen } = require("electron");
 
 const FILE = () => path.join(app.getPath("userData"), "window-state.json");
 
+// Bumped when the default size changes enough that old saved bounds should
+// not win (v2: phone-shaped 430x900 became desktop-shaped 1280x820).
+const VERSION = 2;
+
 function loadBounds(defaults) {
     try {
         const saved = JSON.parse(fs.readFileSync(FILE(), "utf8"));
-        const { x, y, width, height } = saved;
+        const { version, x, y, width, height } = saved;
+        if (version !== VERSION) return defaults;
         if (![x, y, width, height].every(Number.isFinite)) return defaults;
 
         const visible = screen.getAllDisplays().some(({ workArea: area }) =>
@@ -38,7 +43,7 @@ function trackBounds(window) {
         clearTimeout(timer);
         if (window.isDestroyed() || window.isMinimized() || window.isFullScreen()) return;
         try {
-            fs.writeFileSync(FILE(), JSON.stringify(window.getNormalBounds()));
+            fs.writeFileSync(FILE(), JSON.stringify({ version: VERSION, ...window.getNormalBounds() }));
         } catch {}
     };
 

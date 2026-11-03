@@ -14,12 +14,15 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { setApiKey } from '../storage/keyStore';
 import { colors, fonts, radii, type } from '../theme';
+import { runtimePlatform } from '../platform/desktop';
+import { useWideLayout } from '../theme/layout';
 import { LogoMark } from '../theme/LogoMark';
 
 type Props = { onDone: () => void };
 
 export function OnboardingScreen({ onDone }: Props) {
   const insets = useSafeAreaInsets();
+  const wide = useWideLayout();
   const [key, setKey] = React.useState('');
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -52,6 +55,7 @@ export function OnboardingScreen({ onDone }: Props) {
         contentContainerStyle={[
           styles.scroll,
           { paddingTop: Math.max(insets.top, 20) + 52, paddingBottom: Math.max(insets.bottom, 16) + 24 },
+          wide && styles.scrollWide,
         ]}
         keyboardShouldPersistTaps="handled"
       >
@@ -61,8 +65,9 @@ export function OnboardingScreen({ onDone }: Props) {
           </View>
           <Text style={styles.title}>Build any app,{'\n'}right here.</Text>
           <Text style={styles.subtitle}>
-            Describe what you want. Blank Slate writes the code on your phone and runs it the
-            moment it's ready.
+            Describe what you want. Blank Slate writes the code on your{' '}
+            {runtimePlatform() === 'desktop' ? 'computer' : 'phone'} and runs it the moment it's
+            ready.
           </Text>
         </View>
 
@@ -126,6 +131,8 @@ export function OnboardingScreen({ onDone }: Props) {
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.slate },
   scroll: { flexGrow: 1, paddingHorizontal: 24, gap: 40 },
+  // A centered column on desktop instead of a full-width phone screen.
+  scrollWide: { width: '100%', maxWidth: 480, alignSelf: 'center', justifyContent: 'center' },
   intro: { gap: 20 },
   logoTile: {
     width: 64,

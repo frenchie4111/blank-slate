@@ -196,10 +196,12 @@ ${ICON_PROMPT_RULES}
 `;
 
 const DESKTOP_NOTES = `- Blank Slate is running as a desktop app, so this app runs in a desktop window (the web build of React Native), not on a phone.
+- **Design for desktop.** The app fills a landscape pane beside the chat, usually 800–1100pt wide and 700–850pt tall, and the user can resize it. Use the width the way a desktop app would: a sidebar or toolbar instead of bottom tabs, multi-column layouts and grids, master–detail where it fits, and a max width (~720pt) for reading text and forms rather than stretching them edge to edge. Mouse and keyboard are the input: normal-size controls are fine, and add hover states where they help. Keep it usable if the window gets narrow (\`useWindowDimensions\`).
 - \`fetch\` is not limited by CORS here, same as on a phone.`;
 
 const WEB_NOTES = `- Blank Slate is running in a web browser, so this app runs in a browser tab (the web build of React Native), not on a phone.
-- \`fetch\` is subject to browser CORS: APIs that don't send CORS headers will fail. Prefer APIs that allow browser calls.`;
+- \`fetch\` is subject to browser CORS: APIs that don't send CORS headers will fail. Prefer APIs that allow browser calls.
+- Design at phone size (~430pt wide) but keep the layout sensible if the window is resized wider or taller.`;
 
 const platformSection = (notes: string) => `
 ### Platform: desktop / web
@@ -207,7 +209,6 @@ const platformSection = (notes: string) => `
 ${notes}
 - Haptics are silent no-ops. Camera and location may be unavailable or need a permission prompt; handle denial.
 - Image picking opens a file dialog. \`launchCameraAsync\` may also just open a file dialog.
-- Design at phone size (~430pt wide) but keep the layout sensible if the window is resized wider or taller.
 `;
 
 const PLATFORM_SECTIONS: Record<RuntimePlatform, string> = {
