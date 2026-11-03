@@ -1,4 +1,3 @@
-import type Anthropic from '@anthropic-ai/sdk';
 import { Ionicons } from '@expo/vector-icons';
 import React from 'react';
 import {
@@ -15,8 +14,8 @@ import {
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { runAgentTurn, type AgentEvent, type AgentRun } from '../claude/agent';
-import { createClient } from '../claude/client';
+import { runAgentTurn, type AgentEvent, type AgentRun } from '../agent/agent';
+import type { ChatMessage } from '../agent/openrouter';
 import { DynamicView, type RenderError } from '../dynamic/DynamicView';
 import { clearCompileCache } from '../dynamic/resolver';
 import {
@@ -31,6 +30,8 @@ import * as projectStore from '../project/store';
 import type { Project } from '../project/store';
 import { FilesPanel } from './FileViewer';
 import { SettingsScreen } from './SettingsScreen';
+import { getModel } from '../storage/keyStore';
+import { readFile } from '../vfs/vfs';
 
 const ICON_SRC = require('../../assets/icon.png');
 
@@ -38,9 +39,6 @@ type Props = { apiKey: string; onResetKey: () => void };
 
 export function MainScreen({ apiKey, onResetKey }: Props) {
   const insets = useSafeAreaInsets();
-  const clientRef = React.useRef<Anthropic | null>(null);
-  if (!clientRef.current) clientRef.current = createClient(apiKey);
-
   const [entries, setEntries] = React.useState<Entry[]>([]);
   const [input, setInput] = React.useState('');
   const [running, setRunning] = React.useState(false);
@@ -54,7 +52,7 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
   const [renderRevision, setRenderRevision] = React.useState(0);
   const [renderError, setRenderError] = React.useState<RenderError | null>(null);
 
-  const historyRef = React.useRef<Anthropic.MessageParam[]>([]);
+  const historyRef = React.useRef<ChatMessage[]>([]);
   const runRef = React.useRef<AgentRun | null>(null);
   const scrollRef = React.useRef<ScrollView | null>(null);
   const activeProjectRef = React.useRef<string | null>(null);
@@ -111,7 +109,7 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
   }, []);
 
   const persist = React.useCallback(
-    (history: Anthropic.MessageParam[], nextEntries: Entry[]) => {
+    (history: ChatMessage[], nextEntries: Entry[]) => {
       const id = activeProjectRef.current;
       if (!id) return;
       saveChat(id, { history, entries: nextEntries }).catch(() => {});
@@ -122,9 +120,13 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
   const handleEvent = React.useCallback((ev: AgentEvent) => {
     if (ev.type === 'text_delta') {
       setEntries((prev) => {
-        const idx = prev.findIndex(
-          (e) => e.kind === 'assistant' && e.blockIndex === ev.blockIndex,
-        );
+        // blockIndex restarts at 0 every turn, so only match entries after the
+        // latest user message — otherwise new text appends to an old reply.
+        const turnStart = findLastIndex(prev, (e) => e.kind === 'user') + 1;
+        const found = prev
+          .slice(turnStart)
+          .findIndex((e) => e.kind === 'assistant' && e.blockIndex === ev.blockIndex);
+        const idx = found >= 0 ? turnStart + found : -1;
         if (idx >= 0) {
           const copy = prev.slice();
           const existing = copy[idx] as Extract<Entry, { kind: 'assistant' }>;
@@ -196,7 +198,13 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
       setEntries((prev) => [...prev, { kind: 'user', id: `u-${prev.length}`, text }]);
       const projectAtStart = activeProjectRef.current;
       try {
-        const run = runAgentTurn(clientRef.current!, historyRef.current, text, handleEvent);
+        const model = await getModel();
+        const run = runAgentTurn(
+          { apiKey, model, sessionId: `blank-slate:${projectAtStart ?? 'default'}` },
+          historyRef.current,
+          text,
+          handleEvent,
+        );
         runRef.current = run;
         const nextHistory = await run.result;
         historyRef.current = nextHistory;
@@ -213,7 +221,7 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
         runRef.current = null;
       }
     },
-    [handleEvent, persist],
+    [apiKey, handleEvent, persist],
   );
 
   const send = async () => {
@@ -362,7 +370,7 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
                 >
                   {entries.length === 0 ? (
                     <Text style={styles.hint}>
-                      Tell Claude what to build — e.g. "a counter with a red increment button,
+                      Describe what to build — e.g. "a counter with a red increment button,
                       and extract the button into components/Button.tsx".
                     </Text>
                   ) : (
@@ -380,7 +388,7 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
                   <TextInput
                     value={input}
                     onChangeText={setInput}
-                    placeholder="ask claude to build something"
+                    placeholder="describe something to build"
                     placeholderTextColor="#888"
                     style={styles.input}
                     editable={!running}
@@ -662,11 +670,13 @@ function EntryView({ entry }: { entry: Entry }) {
 
 function ServerToolCard({ entry }: { entry: ServerToolEntry }) {
   const [expanded, setExpanded] = React.useState(false);
-  const iconName = entry.name === 'web_search' ? 'search-outline' : 'globe-outline';
+  const iconName = entry.name === 'web_fetch' ? 'globe-outline' : 'search-outline';
   const label =
-    entry.name === 'web_search'
-      ? `web_search(${JSON.stringify(entry.input.query ?? '')})`
-      : `web_fetch(${stringOr(entry.input.url, '')})`;
+    entry.name === 'web_sources'
+      ? `web sources (${entry.result?.kind === 'web_search' ? entry.result.results.length : 0})`
+      : entry.name === 'web_search'
+        ? `web_search(${JSON.stringify(entry.input.query ?? '')})`
+        : `web_fetch(${stringOr(entry.input.url, '')})`;
   const result = entry.result;
   return (
     <Pressable onPress={() => setExpanded((v) => !v)} style={styles.serverToolCard}>
@@ -742,6 +752,8 @@ function ToolCard({ entry }: { entry: ToolEntry }) {
   const [expanded, setExpanded] = React.useState(false);
   const summary = formatToolSummary(entry.name, entry.input);
   const icon = iconFor(entry.name);
+  const showThumb =
+    entry.name === 'generate_image' && entry.result?.ok === true && typeof entry.input.path === 'string';
   return (
     <Pressable onPress={() => setExpanded((v) => !v)} style={styles.toolCard}>
       <View style={styles.toolHeader}>
@@ -757,6 +769,7 @@ function ToolCard({ entry }: { entry: ToolEntry }) {
           <ActivityIndicator size="small" color="#6b7280" />
         )}
       </View>
+      {showThumb ? <VfsImageThumb path={entry.input.path as string} /> : null}
       {expanded ? (
         <View style={styles.toolBody}>
           <Text style={styles.toolLabel}>input</Text>
@@ -771,6 +784,21 @@ function ToolCard({ entry }: { entry: ToolEntry }) {
       ) : null}
     </Pressable>
   );
+}
+
+function VfsImageThumb({ path }: { path: string }) {
+  const [uri, setUri] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    let alive = true;
+    readFile(path).then((c) => {
+      if (alive && c?.startsWith('data:image/')) setUri(c);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [path]);
+  if (!uri) return null;
+  return <Image source={{ uri }} style={styles.toolThumb} resizeMode="cover" />;
 }
 
 function formatRenderErrorPrompt(err: RenderError): string {
@@ -807,9 +835,16 @@ function formatToolSummary(name: string, input: Record<string, unknown>): string
       return 'list_files()';
     case 'delete_file':
       return `delete_file(${stringOr(input.path, '?')})`;
+    case 'generate_image':
+      return `generate_image(${stringOr(input.path, '?')})`;
     default:
       return `${name}(${safeJson(input)})`;
   }
+}
+
+function findLastIndex<T>(arr: T[], pred: (v: T) => boolean): number {
+  for (let i = arr.length - 1; i >= 0; i--) if (pred(arr[i])) return i;
+  return -1;
 }
 
 function stringOr(v: unknown, fallback: string): string {
@@ -828,6 +863,8 @@ function iconFor(name: string): string {
       return '⧉';
     case 'delete_file':
       return '🗑';
+    case 'generate_image':
+      return '🖼';
     default:
       return '•';
   }
@@ -1015,6 +1052,7 @@ const styles = StyleSheet.create({
   toolOk: { color: '#10b981' },
   toolErr: { color: '#ef4444' },
   toolBody: { marginTop: 8, gap: 4 },
+  toolThumb: { width: 120, height: 120, borderRadius: 8, marginTop: 8 },
   toolLabel: { color: '#6b7280', fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5 },
   toolDetail: {
     color: '#9ca3af',

@@ -1,33 +1,27 @@
-import type Anthropic from '@anthropic-ai/sdk';
-import { deleteFile, listFiles, readFile, writeFile } from '../vfs/vfs';
+import { deleteFile, isImagePath, listFiles, readFile, writeFile } from '../vfs/vfs';
+import { IMAGE_MODEL } from './models';
+import { generateImage } from './openrouter';
 
-export const SERVER_TOOL_DEFINITIONS: Anthropic.ToolUnion[] = [
-  {
-    type: 'web_search_20250305',
-    name: 'web_search',
-    max_uses: 5,
-  },
-  {
-    type: 'web_fetch_20250910',
-    name: 'web_fetch',
-    max_uses: 5,
-  },
+// Hosted by OpenRouter: the model calls these and OpenRouter runs them inside
+// the same request, so they never come back to us as tool_calls. What we see is
+// the url_citation annotations on the streamed response.
+export const SERVER_TOOL_DEFINITIONS = [
+  { type: 'openrouter:web_search', parameters: { max_results: 5, max_uses: 5 } },
+  { type: 'openrouter:web_fetch', parameters: { max_uses: 5, max_content_tokens: 20000 } },
 ];
 
-export const CUSTOM_TOOL_NAMES = new Set([
-  'read_file',
-  'write_file',
-  'edit_file',
-  'list_files',
-  'delete_file',
-]);
+type FunctionTool = {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+};
 
-export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
+const FUNCTION_TOOLS: FunctionTool[] = [
   {
     name: 'read_file',
     description:
       'Read the full contents of a file in the app\'s virtual filesystem. Returns the file text, or a "not found" notice if the path does not exist.',
-    input_schema: {
+    parameters: {
       type: 'object',
       properties: {
         path: { type: 'string', description: 'POSIX path, e.g. "App.tsx" or "components/Button.tsx"' },
@@ -39,7 +33,7 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     name: 'write_file',
     description:
       'Create a new file or overwrite an existing file with the given content. Prefer edit_file for small changes to existing files.',
-    input_schema: {
+    parameters: {
       type: 'object',
       properties: {
         path: { type: 'string' },
@@ -52,7 +46,7 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     name: 'edit_file',
     description:
       'Replace an exact substring in a file. Fails if old_string is not found, or is found more than once and replace_all is not true. Preferred for small edits.',
-    input_schema: {
+    parameters: {
       type: 'object',
       properties: {
         path: { type: 'string' },
@@ -67,14 +61,38 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     },
   },
   {
+    name: 'generate_image',
+    description:
+      'Generate an image (icon, illustration, background, photo) from a text prompt and save it to the project at `path`. The file can then be imported from code: `import hero from "./assets/hero.png"` and rendered with `<Image source={hero} />`. Costs the user about $0.04 per image, so only generate images the app actually needs.',
+    parameters: {
+      type: 'object',
+      properties: {
+        prompt: {
+          type: 'string',
+          description: 'Detailed description of the image: subject, style, colors, composition.',
+        },
+        path: {
+          type: 'string',
+          description: 'Where to save it, ending in .png, .jpg or .webp, e.g. "assets/hero.png".',
+        },
+        aspect_ratio: {
+          type: 'string',
+          enum: ['1:1', '16:9', '9:16', '4:3', '3:4'],
+          description: 'Defaults to 1:1.',
+        },
+      },
+      required: ['prompt', 'path'],
+    },
+  },
+  {
     name: 'list_files',
     description: 'List every path currently in the virtual filesystem.',
-    input_schema: { type: 'object', properties: {} },
+    parameters: { type: 'object', properties: {} },
   },
   {
     name: 'delete_file',
     description: 'Remove a file from the virtual filesystem.',
-    input_schema: {
+    parameters: {
       type: 'object',
       properties: { path: { type: 'string' } },
       required: ['path'],
@@ -82,20 +100,53 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
   },
 ];
 
+export const TOOL_DEFINITIONS = FUNCTION_TOOLS.map((t) => ({
+  type: 'function' as const,
+  function: t,
+}));
+
 export type ToolResult = { ok: boolean; text: string };
 
-export async function executeTool(name: string, input: Record<string, unknown>): Promise<ToolResult> {
+export type ToolContext = { apiKey: string; signal?: AbortSignal };
+
+export async function executeTool(
+  name: string,
+  input: Record<string, unknown>,
+  ctx: ToolContext,
+): Promise<ToolResult> {
   try {
     switch (name) {
       case 'read_file': {
         const path = requireString(input, 'path');
         const content = await readFile(path);
         if (content === null) return { ok: false, text: `File not found: ${path}` };
+        // Never dump a base64 image into the context window.
+        if (isImagePath(path)) {
+          return { ok: true, text: `(image file, ${Math.round(content.length / 1024)} KB; import it from code to display it)` };
+        }
         return { ok: true, text: content };
+      }
+      case 'generate_image': {
+        const prompt = requireString(input, 'prompt');
+        const path = requireString(input, 'path');
+        if (!isImagePath(path)) {
+          return { ok: false, text: 'path must end in .png, .jpg, .jpeg, .webp or .gif' };
+        }
+        const aspect = typeof input.aspect_ratio === 'string' ? input.aspect_ratio : undefined;
+        const { dataUrl, cost } = await generateImage(ctx.apiKey, IMAGE_MODEL, prompt, aspect, ctx.signal);
+        await writeFile(path, dataUrl);
+        const costNote = cost !== null ? `, cost $${cost.toFixed(3)}` : '';
+        return {
+          ok: true,
+          text: `Saved image to ${path} (${Math.round(dataUrl.length / 1024)} KB${costNote}). Import it with a relative path and pass it to <Image source={...} />.`,
+        };
       }
       case 'write_file': {
         const path = requireString(input, 'path');
         const content = requireString(input, 'content');
+        if (isImagePath(path) && !content.startsWith('data:image/')) {
+          return { ok: false, text: 'Use generate_image to create image files.' };
+        }
         await writeFile(path, content);
         return { ok: true, text: `Wrote ${path} (${content.length} chars)` };
       }
@@ -104,6 +155,7 @@ export async function executeTool(name: string, input: Record<string, unknown>):
         const oldStr = requireString(input, 'old_string');
         const newStr = requireString(input, 'new_string');
         const replaceAll = input.replace_all === true;
+        if (isImagePath(path)) return { ok: false, text: 'Cannot edit an image file; regenerate it instead.' };
         if (oldStr === newStr) return { ok: false, text: 'old_string and new_string are identical' };
         const existing = await readFile(path);
         if (existing === null) return { ok: false, text: `File not found: ${path}` };

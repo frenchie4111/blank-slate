@@ -10,7 +10,6 @@
     "update:preview": "eas update --branch preview --message"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.90.0",
     "@babel/standalone": "^7.29.2",
     "@expo/metro-runtime": "~6.1.2",
     "@expo/vector-icons": "^15.0.3",

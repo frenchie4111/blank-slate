@@ -103,7 +103,7 @@ function ErrorCard({
         <Text style={styles.errorMessage}>{message}</Text>
         {onFix ? (
           <Pressable style={styles.fixBtn} onPress={onFix}>
-            <Text style={styles.fixBtnText}>Ask Claude to fix this</Text>
+            <Text style={styles.fixBtnText}>Ask the agent to fix this</Text>
           </Pressable>
         ) : null}
         {stack ? <Text style={styles.errorStack}>{stack}</Text> : null}

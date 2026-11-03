@@ -1,5 +1,5 @@
 import type { ComponentType } from 'react';
-import { readFile } from '../vfs/vfs';
+import { isImagePath, readFile } from '../vfs/vfs';
 import { BUILTIN_MODULES, ALLOWLIST, isBuiltin } from './requireShim';
 import { transpile } from './transpile';
 
@@ -29,8 +29,11 @@ export function clearCompileCache(): void {
   moduleCache.clear();
 }
 
-export function invalidate(path: string): void {
-  moduleCache.delete(path);
+// Importers hold references to their dependencies' exports, so evicting only
+// the changed file would leave e.g. App.tsx (unchanged hash) serving a stale
+// component. Drop everything; recompiling a small VFS is cheap.
+export function invalidate(_path: string): void {
+  moduleCache.clear();
 }
 
 function hashContent(s: string): string {
@@ -105,6 +108,15 @@ async function compileFile(
 ): Promise<Exports> {
   const content = await readFile(path);
   if (content === null) fail('missing', path, `File not found: ${path}`);
+
+  // Images resolve to an RN image source, so `import logo from './logo.png'`
+  // can be passed straight to <Image source={logo} />.
+  if (isImagePath(path)) {
+    if (!content.startsWith('data:image/')) {
+      fail('execute', path, `${path} is not an image (expected a data:image/ URL).`);
+    }
+    return { uri: content };
+  }
 
   const hash = hashContent(content);
   const cached = moduleCache.get(path);

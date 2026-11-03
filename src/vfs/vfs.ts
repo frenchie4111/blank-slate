@@ -5,6 +5,15 @@ type Listener = (change: { type: 'write' | 'delete'; path: string }) => void;
 
 const listeners = new Set<Listener>();
 
+// Image assets (from generate_image) are stored as data URLs under these
+// extensions. Code imports them like `import logo from './assets/logo.png'`.
+export const IMAGE_EXTS = ['.png', '.jpg', '.jpeg', '.webp', '.gif'];
+
+export function isImagePath(path: string): boolean {
+  const lower = path.toLowerCase();
+  return IMAGE_EXTS.some((e) => lower.endsWith(e));
+}
+
 function normalizePath(raw: string): string {
   let p = raw.trim();
   while (p.startsWith('./')) p = p.slice(2);

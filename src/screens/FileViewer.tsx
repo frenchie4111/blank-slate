@@ -1,6 +1,7 @@
 import React from 'react';
 import {
   ActivityIndicator,
+  Image,
   Platform,
   Pressable,
   ScrollView,
@@ -98,6 +99,8 @@ export function FilesPanel({ projectId }: Props) {
               <View style={styles.loadingRow}>
                 <ActivityIndicator size="small" color="#9ca3af" />
               </View>
+            ) : content?.startsWith('data:image/') ? (
+              <Image source={{ uri: content }} style={styles.imagePreview} resizeMode="contain" />
             ) : (
               <ScrollView horizontal showsHorizontalScrollIndicator>
                 <Text style={styles.code} selectable>
@@ -110,7 +113,7 @@ export function FilesPanel({ projectId }: Props) {
           <View style={styles.emptyWrap}>
             <Text style={styles.empty}>
               {files.length === 0
-                ? 'No files yet. Ask Claude in the Chat tab to build something.'
+                ? 'No files yet. Ask the agent in the Chat tab to build something.'
                 : 'Pick a file to view its contents.'}
             </Text>
           </View>
@@ -159,6 +162,7 @@ function iconForPath(path: string): string {
   if (path.endsWith('.ts') || path.endsWith('.js')) return 'JS';
   if (path.endsWith('.json')) return '{}';
   if (path.endsWith('.md')) return 'M';
+  if (vfs.isImagePath(path)) return '🖼';
   return '•';
 }
 
@@ -207,6 +211,7 @@ const styles = StyleSheet.create({
   bodyWrap: { flex: 1, position: 'relative' },
   contentScroll: { flex: 1, backgroundColor: '#0b0b0f' },
   contentInner: { padding: 14 },
+  imagePreview: { width: '100%', aspectRatio: 1, borderRadius: 8 },
   loadingRow: { padding: 24, alignItems: 'center' },
   code: {
     color: '#e5e7eb',

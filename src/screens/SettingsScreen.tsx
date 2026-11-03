@@ -10,9 +10,12 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { MODEL_OPTIONS } from '../agent/models';
+import { getModel, setModel } from '../storage/keyStore';
 
 type Props = {
   onBack: () => void;
@@ -61,6 +64,25 @@ export function SettingsScreen({ onBack, onResetKey }: Props) {
     }
   };
 
+  const [model, setModelState] = React.useState<string | null>(null);
+  const [customModel, setCustomModel] = React.useState('');
+
+  React.useEffect(() => {
+    getModel().then((m) => {
+      setModelState(m);
+      if (!MODEL_OPTIONS.some((o) => o.id === m)) setCustomModel(m);
+    });
+  }, []);
+
+  const chooseModel = async (id: string) => {
+    const trimmed = id.trim();
+    if (!trimmed) return;
+    setModelState(trimmed);
+    await setModel(trimmed);
+  };
+
+  const customIsActive = model !== null && !MODEL_OPTIONS.some((o) => o.id === model);
+
   const handleConfirmReset = async () => {
     setResetting(true);
     try {
@@ -94,7 +116,51 @@ export function SettingsScreen({ onBack, onResetKey }: Props) {
       </View>
 
       <ScrollView contentContainerStyle={styles.scroll}>
-        <Section title="API Key">
+        <Section title="Model">
+          {MODEL_OPTIONS.map((o) => (
+            <Pressable
+              key={o.id}
+              style={({ pressed }) => [styles.modelRow, pressed && styles.rowBtnPressed]}
+              onPress={() => chooseModel(o.id)}
+            >
+              <View style={styles.modelText}>
+                <Text style={styles.modelLabel}>{o.label}</Text>
+                <Text style={styles.modelNote}>{o.note}</Text>
+              </View>
+              {model === o.id ? <Ionicons name="checkmark" size={18} color="#34d399" /> : null}
+            </Pressable>
+          ))}
+          <View style={styles.customRow}>
+            <TextInput
+              value={customModel}
+              onChangeText={setCustomModel}
+              placeholder="any OpenRouter model ID, e.g. qwen/qwen3.8-max-prime"
+              placeholderTextColor="#6b7280"
+              autoCapitalize="none"
+              autoCorrect={false}
+              style={styles.customInput}
+              onSubmitEditing={() => chooseModel(customModel)}
+              returnKeyType="done"
+            />
+            <Pressable
+              style={[styles.customBtn, !customModel.trim() && styles.buttonDisabled]}
+              onPress={() => chooseModel(customModel)}
+              disabled={!customModel.trim()}
+            >
+              {customIsActive && customModel.trim() === model ? (
+                <Ionicons name="checkmark" size={16} color="#0b0b0f" />
+              ) : (
+                <Text style={styles.customBtnText}>Use</Text>
+              )}
+            </Pressable>
+          </View>
+        </Section>
+        <Text style={styles.sectionHint}>
+          Prices are USD per million input / output tokens. Browse more models at
+          openrouter.ai/models. Takes effect on your next message.
+        </Text>
+
+        <Section title="OpenRouter API Key">
           <Pressable
             style={({ pressed }) => [styles.rowBtn, pressed && styles.rowBtnPressed]}
             onPress={() => setConfirmReset(true)}
@@ -182,7 +248,7 @@ export function SettingsScreen({ onBack, onResetKey }: Props) {
           <View style={styles.modalCard}>
             <Text style={styles.modalTitle}>Reset API Key?</Text>
             <Text style={styles.modalBody}>
-              This will log you out. You'll need to paste your Anthropic API key again to
+              This will log you out. You'll need to paste your OpenRouter API key again to
               continue.
             </Text>
             <View style={styles.modalActions}>
@@ -282,6 +348,8 @@ const styles = StyleSheet.create({
   headerBack: { flexDirection: 'row', alignItems: 'center', gap: 2, paddingVertical: 4, paddingRight: 8 },
   headerBackText: { color: '#fff', fontSize: 15 },
   headerTitle: {
+    // Spans the full row to stay centered; don't let it swallow taps on Back.
+    pointerEvents: 'none',
     position: 'absolute',
     left: 0,
     right: 0,
@@ -325,6 +393,40 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
   },
   rowBtnPressed: { backgroundColor: '#1f2937' },
+  modelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#1f2937',
+    gap: 12,
+  },
+  modelText: { flex: 1, gap: 2 },
+  modelLabel: { color: '#e5e7eb', fontSize: 14, fontWeight: '600' },
+  modelNote: { color: '#6b7280', fontSize: 12 },
+  customRow: { flexDirection: 'row', alignItems: 'center', gap: 8, padding: 10 },
+  customInput: {
+    flex: 1,
+    backgroundColor: '#0b0b0f',
+    borderWidth: 1,
+    borderColor: '#2a2a30',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    color: '#fff',
+    fontSize: 13,
+    fontFamily: MONO,
+  },
+  customBtn: {
+    backgroundColor: '#fff',
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    borderRadius: 8,
+    minWidth: 52,
+    alignItems: 'center',
+  },
+  customBtnText: { color: '#0b0b0f', fontWeight: '700', fontSize: 13 },
   rowBtnDanger: { color: '#ef4444', fontSize: 14, fontWeight: '600' },
 
   modalBackdrop: {

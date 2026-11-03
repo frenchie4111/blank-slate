@@ -21,8 +21,8 @@ export function OnboardingScreen({ onDone }: Props) {
 
   const submit = async () => {
     const trimmed = key.trim();
-    if (!trimmed.startsWith('sk-ant-')) {
-      setError('That does not look like an Anthropic API key (expected "sk-ant-...").');
+    if (!trimmed.startsWith('sk-or-')) {
+      setError('That does not look like an OpenRouter API key (expected "sk-or-...").');
       return;
     }
     setSaving(true);
@@ -45,15 +45,16 @@ export function OnboardingScreen({ onDone }: Props) {
       <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
         <Text style={styles.title}>Blank Slate</Text>
         <Text style={styles.subtitle}>
-          An empty app. Paste your Anthropic API key to start asking Claude to build things.
+          An empty app. Paste your OpenRouter API key to start asking an AI to build things.
+          You can pick the model in Settings.
         </Text>
 
         <View style={styles.field}>
-          <Text style={styles.label}>Anthropic API key</Text>
+          <Text style={styles.label}>OpenRouter API key</Text>
           <TextInput
             value={key}
             onChangeText={setKey}
-            placeholder="sk-ant-..."
+            placeholder="sk-or-..."
             placeholderTextColor="#888"
             autoCapitalize="none"
             autoCorrect={false}
@@ -79,7 +80,7 @@ export function OnboardingScreen({ onDone }: Props) {
 
         <Text style={styles.note}>
           Your key is stored locally on this device (Keychain / Keystore). It is never sent anywhere
-          except directly to api.anthropic.com.
+          except directly to openrouter.ai. Create one at openrouter.ai/keys.
         </Text>
       </ScrollView>
     </KeyboardAvoidingView>

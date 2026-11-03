@@ -21,7 +21,7 @@ export default function App() {
     <View style={styles.wrap}>
       <Text style={styles.title}>Blank Slate</Text>
       <Text style={styles.body}>
-        Tap the badge in the top-left to chat with Claude about what this app
+        Tap the badge in the top-left to chat with the agent about what this app
         should become.
       </Text>
     </View>
