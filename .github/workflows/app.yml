@@ -1,0 +1,138 @@
+name: Test & Publish app update
+
+# Modelled on Grow's app.yml. main publishes an OTA update to `preview`; a
+# version tag publishes to `production`. The same tag also builds the desktop
+# installers in `desktop.yml`, so a release is one act and the surfaces can't
+# drift to different versions.
+#
+# Branch pushes are path-filtered to the app. Tag pushes are not, and can't be:
+# GitHub doesn't evaluate path filters for tags, so every matching tag runs
+# this workflow. That is intended, because the tag is the instruction to ship.
+# The pattern requires a digit, not a bare `v*`, so a tag like `vendor-bump`
+# doesn't match.
+on:
+  push:
+    branches:
+      - "**"
+    tags:
+      - "v[0-9]*"
+    paths:
+      - "src/**"
+      - "assets/**"
+      - "App.tsx"
+      - "index.ts"
+      - "app.json"
+      - "eas.json"
+      - "package.json"
+      - "package-lock.json"
+      - "metro.config.js"
+      - "tsconfig.json"
+      - ".nvmrc"
+      - ".github/workflows/app.yml"
+  # Re-runs the production update for a tag without moving the tag. Run it
+  # against the tag ref; the jobs below read the ref to pick the channel.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      # There's no test runner. The sandbox self-test (src/sandbox/selfTest.ts)
+      # imports react-native and expo-sqlite, so it only runs inside the app,
+      # in __DEV__. The typecheck and the export are the checks.
+      - name: Typecheck
+        run: npx tsc --noEmit
+      # Catches Metro and resolver breakage that tsc can't see: a missing asset,
+      # a package whose `exports` don't resolve for web, a bad import path in a
+      # file tsc treats as untyped. This is the same export the desktop app wraps.
+      - name: Export the web build
+        run: npx expo export -p web --output-dir "$RUNNER_TEMP/web"
+
+  # The update is published under `runtimeVersion: { policy: "appVersion" }`,
+  # which is `expo.version`. Nothing reads the tag itself, so a `v1.2.0` tag on
+  # a commit whose app.json still says 1.1.0 would ship to the 1.1.0 runtime
+  # under the newer name.
+  version:
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check the tag matches the app version
+        env:
+          # Passed through the environment, not inline: a tag name is arbitrary
+          # text and would otherwise reach the shell as syntax.
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=$(node -p "require('./app.json').expo.version")
+          if [ "$TAG" != "v$version" ]; then
+            echo "::error::Tag $TAG does not match expo.version $version in app.json."
+            exit 1
+          fi
+
+  update:
+    # An update goes straight to installed builds with no review step, so the
+    # tests gate it. `version` is listed so a tag waits for it; on a branch it's
+    # skipped and costs no time.
+    needs: [test, version]
+
+    # `!cancelled()` because a skipped `needs` otherwise skips this job too, and
+    # `version` is skipped on every branch push.
+    if: >-
+      !cancelled()
+      && needs.test.result == 'success'
+      && needs.version.result != 'failure'
+      && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+
+    runs-on: ubuntu-latest
+
+    # Clients take the newest update on a channel, so two runs on the same
+    # channel must not finish out of order. Preview and production can't
+    # affect each other, so each gets its own group.
+    concurrency: blank-slate-eas-update-${{ startsWith(github.ref, 'refs/tags/v') && 'production' || 'preview' }}
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: package-lock.json
+      # `eas update` bundles the app from this tree, so it needs the same
+      # installed dependencies as the build.
+      - name: Install dependencies
+        run: npm ci
+      - name: Publish the update
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          # Passed through the environment: a commit message is untrusted input.
+          # A dispatched run has no head commit, so it uses the ref name instead.
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message || github.ref_name }}
+          # The channel decides which installed builds take the update. The EAS
+          # environment decides which server-side EAS variables are inlined, and
+          # it always uses the same name. `--environment` is optional on SDK 54
+          # and required from SDK 55, so passing it now avoids breaking on the
+          # upgrade.
+          CHANNEL: ${{ startsWith(github.ref, 'refs/tags/v') && 'production' || 'preview' }}
+        # `--branch`, not `--channel`: the `production` channel doesn't exist
+        # until the first production EAS build creates it, so `--channel` would
+        # fail. Publishing to the branch creates the branch, and a channel EAS
+        # creates links to the branch of the same name (`preview` -> `preview`
+        # today).
+        #
+        # Pinned so an eas-cli release can't change what a tag ships. eas.json
+        # requires >= 16.17.4.
+        run: npx --yes eas-cli@27.4.1 update --branch "$CHANNEL" --environment "$CHANNEL" --message "$COMMIT_MESSAGE" --non-interactive
