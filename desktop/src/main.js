@@ -6,11 +6,8 @@ const { SCHEME, START_URL, registerScheme, serve } = require("./serve");
 const { attachMcpWindow, startMcp } = require("./mcp");
 const { registerSecureStore } = require("./secureStore");
 const { configureSession } = require("./session");
+const { startUpdates } = require("./update");
 const { loadBounds, trackBounds } = require("./windowState");
-
-// Auto-update is not wired up yet: there is no S3 bucket to publish to. See
-// "Auto-update" in README.md, and Grow's `desktop/src/update.js` for the shape
-// it should take.
 
 // `electron .` runs as "Blank Slate Dev", with its own data folder and so its
 // own "… Safe Storage" Keychain item. Sharing one with the packaged app would
@@ -93,6 +90,7 @@ app.whenReady().then(() => {
     configureSession();
     startMcp().catch((e) => console.warn("[mcp] failed to start:", e));
     createWindow();
+    startUpdates();
 
     app.on("activate", () => {
         if (BrowserWindow.getAllWindows().length === 0) createWindow();

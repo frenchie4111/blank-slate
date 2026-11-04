@@ -25,6 +25,13 @@
       "renderer/**/*",
       "package.json"
     ],
+    "publish": {
+      "provider": "github",
+      "owner": "frenchie4111",
+      "repo": "blank-slate",
+      "releaseType": "draft"
+    },
+    "artifactBuildCompleted": "scripts/notarize-dmg.js",
     "mac": {
       "category": "public.app-category.developer-tools",
       "icon": "../assets/icon-mac.png",
@@ -39,6 +46,7 @@
         "NSLocationUsageDescription": "Blank Slate uses your location if an app you build needs it (e.g. weather, check-ins).",
         "NSLocationWhenInUseUsageDescription": "Blank Slate uses your location if an app you build needs it (e.g. weather, check-ins)."
       },
+      "artifactName": "BlankSlate-${version}-mac-${arch}.${ext}",
       "target": [
         {
           "target": "dmg",
@@ -56,6 +64,10 @@
         }
       ]
     },
+    "dmg": {
+      "sign": true,
+      "writeUpdateInfo": false
+    },
     "win": {
       "icon": "../assets/icon.png",
       "target": [
@@ -66,6 +78,9 @@
           ]
         }
       ]
+    },
+    "nsis": {
+      "artifactName": "BlankSlate-${version}-win-${arch}.${ext}"
     },
     "electronFuses": {
       "runAsNode": false,
@@ -78,6 +93,9 @@
   },
   "devDependencies": {
     "electron": "^44.5.1",
-    "electron-builder": "^26.17.0"
+    "electron-builder": "^26.18.0"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.11"
   }
 }
