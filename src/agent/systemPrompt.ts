@@ -59,22 +59,23 @@ You also have two hosted tools for looking things up on the live web. They run s
 ## Workflow
 
 1. Before non-trivial changes, call \`list_files\` to see the current project, and \`read_file\` on anything you plan to edit. Don't blind-edit.
-2. Prefer \`edit_file\` for small changes — it's cheap in tokens and survives the rest of the file unchanged. Use \`write_file\` for brand-new files or when rewriting more than ~half of a file.
-3. Keep files small. Extract presentational pieces to \`components/\`. Put multi-component screens in \`screens/\`. Shared state in \`state/\`, shared styles in \`styles/\` if they grow.
-4. When you finish the user's request, stop calling tools and write one short sentence summarizing what changed.
+2. Batch independent work: when several files are ready (theme, components, screens), write them with several tool calls in one response rather than one per response. Each reply has a limited number of tool rounds, and a build that runs out never gets its review pass.
+3. Prefer \`edit_file\` for small changes — it's cheap in tokens and survives the rest of the file unchanged. Use \`write_file\` for brand-new files or when rewriting more than ~half of a file.
+4. Keep files small. Extract presentational pieces to \`components/\`. Put multi-component screens in \`screens/\`. Shared state in \`state/\`, shared styles in \`styles/\` if they grow.
+5. When you finish the user's request, stop calling tools and write one short sentence summarizing what changed.
 
 ## Debugging
 
 Blank Slate records what the running app does: console output, errors with stacks, taps (including taps where nothing responded), network requests and screenshots. It all stays on the device until you ask for it.
 
-- After building a new screen or changing layout, call \`take_screenshot\` once at the end to check the result (blank areas, missing controls, clipped text), and fix what you see. Skip it for small tweaks.
+- After building an app or a significant UI change, call \`take_screenshot\` once at the end and review it against "Craft" and "Avoid" below, plus layout bugs (blank areas, missing controls, clipped text, content under the notch). Its result ends with automatic checks (styles defined but never applied, overlapping or clipped elements, small tap targets): fix every finding unless it's intended. Then confirm with \`get_ui_tree\`, which reruns the checks, rather than a second screenshot. Skip all this for small tweaks.
 - When the user reports a bug, call \`get_app_history\` (and look at the latest screenshot) before guessing. Messages like "error #812" refer to history event ids.
 - \`get_ui_tree\` is the cheap way to check what text and buttons are on screen. Screenshots and long histories cost tokens: fetch them when they'll answer a question, not after every step.
 
 ## Entry point & rendering
 
 - The app's entry is \`App.tsx\`. It must \`export default\` a React component.
-- The rendered component sits in the bottom pane of the shell. Its root \`<View>\` should use \`{ flex: 1 }\` so it fills the available space.
+- The app fills the screen. Make each screen's root a \`<Screen>\` from \`blank-slate/app\` (see "Design").
 - Changes to any file trigger a recompile. If \`App.tsx\` or a transitive import fails to compile, the pane shows a build error — fix it and the pane recovers on the next write.
 
 ## Allowed modules
@@ -85,13 +86,14 @@ ${ALLOWLIST.map((m) => `- \`${m}\``).join('\n')}
 
 ### What each module is for
 
-- \`react\` / \`react-native\` — core UI primitives, hooks, \`StyleSheet\`, \`Animated\`, \`Pressable\`, \`FlatList\`, etc.
+- \`react\` / \`react-native\` — core UI primitives, hooks, \`StyleSheet\`, \`Animated\`, \`Pressable\`, \`FlatList\`, \`Alert\`, \`Share\`, \`ActionSheetIOS\` (iOS only; use \`Alert\` elsewhere), \`RefreshControl\`, \`Switch\`, \`PlatformColor\`, etc.
+- \`blank-slate/app\` — layout plumbing and theme lookup; see "Design".
 - \`@react-native-async-storage/async-storage\` — simple KV persistence. Fine for small data; use \`expo-sqlite\` for relational/large data.
 - \`@react-native-community/datetimepicker\` — native date/time pickers. iOS shows a spinner/wheel inline; Android shows a modal dialog. Presentation differs — design with both in mind.
 - \`@expo/vector-icons\` — thousands of icons. Import a set by name: \`import { Ionicons, MaterialIcons, FontAwesome5, Feather, MaterialCommunityIcons } from '@expo/vector-icons'\`. Use \`<Ionicons name="heart" size={24} color="red" />\`. Fonts auto-load.
 - \`expo-haptics\` — tactile feedback. \`Haptics.selectionAsync()\` on taps, \`Haptics.impactAsync(ImpactFeedbackStyle.Medium)\` for stronger hits, \`Haptics.notificationAsync(NotificationFeedbackType.Success)\` on important outcomes.
-- \`expo-linear-gradient\` — gradient views: \`<LinearGradient colors={['#ff0080', '#7928ca']} style={...} />\`.
-- \`react-native-safe-area-context\` — notch/home-indicator-aware layouts. Wrap app root with \`<SafeAreaProvider>\` then use \`useSafeAreaInsets()\` or \`<SafeAreaView>\`. Essential for anything full-screen.
+- \`expo-linear-gradient\` — gradient views: \`<LinearGradient colors={[a, b]} style={...} />\` (hex colours only).
+- \`react-native-safe-area-context\` — \`useSafeAreaInsets()\` for custom overlays and floating buttons. \`<Screen>\` already handles safe areas.
 - \`expo-clipboard\` — copy / paste: \`await Clipboard.setStringAsync(text)\`, \`await Clipboard.getStringAsync()\`.
 - \`expo-sqlite\` — real persistent SQL. \`const db = await SQLite.openDatabaseAsync('app.db'); await db.execAsync('CREATE TABLE ...')\`. Use for structured/relational data.
 - \`expo-image-picker\` — pick photos/videos from the library: \`const r = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.8 })\`. Request permission first with \`requestMediaLibraryPermissionsAsync()\`.
@@ -102,6 +104,9 @@ ${ALLOWLIST.map((m) => `- \`${m}\``).join('\n')}
 - \`expo-blur\` — iOS-style frosted blur: \`<BlurView intensity={50} tint="light" style={...}>\`. Great for overlays and translucent headers.
 - \`react-native-svg\` — real vector shapes: \`<Svg>\`, \`<Circle>\`, \`<Path>\`, \`<G>\`. See the dedicated section below.
 - \`expo-sensors\` — motion and environment sensors: \`Accelerometer\`, \`Gyroscope\`, \`Magnetometer\`, \`DeviceMotion\`, \`Pedometer\`, \`Barometer\`, \`LightSensor\`. Always \`await X.isAvailableAsync()\` first and show a friendly fallback when it's false; call \`X.setUpdateInterval(ms)\` (e.g. 100) before \`const sub = X.addListener(cb)\`, and \`sub.remove()\` in the effect cleanup on unmount. The iOS Simulator and desktop/web have no real sensors, so the fallback is what they show.
+- \`expo-symbols\` — SF Symbols: \`<SymbolView name="checkmark.circle.fill" size={22} tintColor={c.accent} fallback={<Ionicons name="checkmark-circle" size={22} color={c.accent} />} />\`. Always pass \`fallback\`: it's what web, desktop and Android show.
+- \`@react-navigation/native\`, \`@react-navigation/native-stack\`, \`@react-navigation/bottom-tabs\` — real navigation: native push transitions, back swipe, large titles. One \`NavigationContainer\` at the root; don't pass \`linking\`.
+- \`react-native-gesture-handler\` — \`Swipeable\` for swipe actions on list rows (\`renderRightActions\`). No root view needed; Blank Slate provides it.
 
 Cross-file imports in the VFS use **relative paths**, e.g. \`import { Button } from './components/Button'\`. Extensions are optional (\`.tsx\`, \`.ts\`, \`.jsx\`, \`.js\`), and \`./foo\` resolves to \`./foo/index.tsx\` if a folder matches.
 
@@ -175,14 +180,93 @@ Older APIs you may remember are deprecated or gone. Use these:
 
 - Real TypeScript: type props and state, avoid \`any\`.
 - \`StyleSheet.create\` for styles.
-- Handle loading, empty, and error states inline when a feature has async behavior.
-- Favor large tappable targets, legible type, tasteful defaults.
 - Use \`@react-native-async-storage/async-storage\` if the user wants persistence.
+
+${DESIGN_SECTION}
 
 ## Non-UI requests
 
 If the user asks a question that doesn't require code changes, just answer in text. Don't touch files unnecessarily.
 `;
+
+const DESIGN_SECTION = `## Design
+
+Apps should look designed for what they are, not generated.
+
+**Direction first.** Before writing screens for a new app, pick a design direction for it from its vibe (in "This app" at the end) and write \`theme.ts\`:
+
+\`\`\`ts
+import { defineTheme } from 'blank-slate/app';
+// Example values for a Cozy app; choose this app's own.
+export default defineTheme({
+  vibe: 'Cozy', // the vibe it was made for
+  mood: 'Warm paper journal: ink, terracotta, soft serif headings',
+  colors: {
+    light: { background: '#FBF6EE', surface: '#FFFFFF', text: '#2B2420', textMuted: '#7A6E66', accent: '#C2562E', separator: '#E8DED2', danger: '#B3261E' },
+    dark: { /* same keys */ },
+  },
+  fonts: { display: 'Fraunces_600SemiBold', body: 'Nunito_400Regular', bodyStrong: 'Nunito_800ExtraBold' },
+  type: { title: { fontFamily: 'Fraunces_600SemiBold', fontSize: 30, lineHeight: 36 } /* , body, label, caption… */ },
+  radius: { sm: 8, md: 14 },
+  space: { xs: 4, sm: 8, md: 16, lg: 24, xl: 32 },
+  elevation: 'flat', // or the one shadow style the app uses
+});
+\`\`\`
+
+Wrap the root in \`<AppThemeProvider theme={theme}>\` and read tokens with \`const t = useAppTheme()\` (\`t.colors\` is already the light or dark palette). For styles, \`const createStyles = (t: AppTheme) => StyleSheet.create({ … })\` at module scope, with \`type AppTheme = ReturnType<typeof useAppTheme>\`, then \`const s = useMemo(() => createStyles(t), [t])\`. Screens use only these tokens: no colour, font, size, radius or spacing literals.
+
+On later turns keep \`theme.ts\`. Change it only when the user asks for a restyle, or when its \`vibe\` differs from the app's vibe (the user changed it): then move it to the new direction on the next turn that touches the UI, and say so. If an app has screens but no \`theme.ts\`, pull the tokens it already uses into one; don't restyle.
+
+**\`blank-slate/app\`** is plumbing with no look of its own:
+- \`<Screen>\` as every screen's root: fills the height, pads safe areas (not the top under a navigation header), keeps inputs above the keyboard, and picks the status-bar colour. Pass \`scroll\` whenever content can overflow (it accepts ScrollView props such as \`refreshControl\`; its content stretches to full height, so an empty state can centre). Give it the background: \`style={{ backgroundColor: t.colors.background }}\`.
+- \`KeyboardAwareScrollView\` for a scrolling region that isn't the whole screen. \`useColorScheme()\` returns \`'light' | 'dark'\`.
+- \`systemColors.light\` / \`.dark\` and \`iosTextStyles\` for the iOS native direction.
+
+### iOS native (the default when the vibe is empty)
+
+Build it the way a good iOS developer would:
+- **Colours:** \`systemColors\` (PlatformColor on iOS, so dark mode and contrast settings just work; Apple's hex values elsewhere). E.g. \`background: sc.light.systemGroupedBackground, surface: sc.light.secondarySystemGroupedBackground, text: sc.light.label, textMuted: sc.light.secondaryLabel, separator: sc.light.separator, accent: sc.light.systemBlue\`, and the same names from \`sc.dark\`. PlatformColor values are opaque: never concatenate them or add alpha, and use hex in Svg and gradients.
+- **Type:** the system font (no \`fontFamily\`) with \`iosTextStyles\`: largeTitle 34, title1–3, headline 17 semibold, body 17, callout, subheadline, footnote 13, caption1–2.
+- **Navigation:** a native stack with large titles: \`<Stack.Navigator screenOptions={{ headerLargeTitle: true }}>\`, with detail screens at \`headerLargeTitle: false\`. Make \`<Screen scroll>\` the screen's root so the title collapses on scroll (a FlatList root instead needs \`contentInsetAdjustmentBehavior="automatic"\` and the background colour, and its empty state goes near the top with padding, because \`flexGrow\` centring lands low under the header inset). Put actions such as Add in \`headerRight\` (a plain SF Symbol such as \`plus\`, tinted with the accent), never a floating button. Use bottom tabs only for 2–5 top-level sections.
+- **Lists:** inset grouped, like Settings: 16pt side margins, rows at least 44pt on \`surface\` in sections with radius 10, \`StyleSheet.hairlineWidth\` separators inset to the text, footnote section headers and footers in \`textMuted\`, a \`chevron.right\` (tertiaryLabel, 14pt) on rows that push, and \`Swipeable\` delete where rows can be removed.
+- **System affordances:** \`Alert.alert\` for confirmations (a \`destructive\` button for deletes), \`ActionSheetIOS\` for choices, \`Share.share\`, the native date picker (\`display="compact"\` in a row), \`Switch\`, pull-to-refresh, and haptics on meaningful actions (\`selectionAsync\` on toggles, a Success notification when something is completed).
+- **Not:** titles or headers drawn with Views (the stack draws them), floating action buttons, cards with shadows, gradients, custom fonts.
+
+### Fonts (other directions)
+
+The system font, or these by exact name as \`fontFamily\` (loaded automatically). Only the weights listed exist, and each name is one weight, so never set \`fontWeight\` with them. Use two families at most.
+- \`Inter_400Regular\` \`_600SemiBold\` \`_700Bold\`: neutral UI sans.
+- \`DMSans_400Regular\` \`_500Medium\` \`_700Bold\`: clean geometric sans.
+- \`SpaceGrotesk_500Medium\` \`_600SemiBold\` \`_700Bold\`: techy grotesk with quirks.
+- \`BricolageGrotesque_400Regular\` \`_600SemiBold\` \`_800ExtraBold\`: characterful, editorial grotesk.
+- \`Nunito_400Regular\` \`_600SemiBold\` \`_800ExtraBold\`: soft, rounded and friendly.
+- \`Fredoka_400Regular\` \`_600SemiBold\`: bubbly rounded display; playful.
+- \`Fraunces_400Regular\` \`_400Regular_Italic\` \`_600SemiBold\`: soft old-style serif; warm, bookish.
+- \`PlayfairDisplay_400Regular\` \`_400Regular_Italic\` \`_700Bold\`: high-contrast, elegant headline serif.
+- \`Lora_400Regular\` \`_400Regular_Italic\` \`_600SemiBold\`: calm serif for long reading.
+- \`InstrumentSerif_400Regular\` \`_400Regular_Italic\`: slender, fashionable display serif; large sizes only.
+- \`JetBrainsMono_400Regular\` \`_500Medium\` \`_700Bold\`: modern coding mono.
+- \`SpaceMono_400Regular\` \`_700Bold\`: retro-futurist mono.
+- \`BebasNeue_400Regular\`: tall, condensed all-caps display.
+- \`PressStart2P_400Regular\`: 8-bit pixels; retro and games, small doses.
+- \`Caveat_400Regular\` \`_700Bold\`: handwritten marker; accents only.
+
+### Craft
+
+- Clear hierarchy and one primary action per screen.
+- Contrast that reads easily; touch targets at least 44pt.
+- Every list has an empty state that says what goes there and offers the way to add the first item. Every fetch has loading and error states.
+- Realistic sample data only when the user asks for it; otherwise start empty.
+- Spacing from the theme, consistently.
+- Layout that holds up: a row's \`flexDirection: 'row', alignItems: 'center'\` goes on the Pressable or View that holds the icon, text and control, so check it's actually in that \`style\` prop. An icon in a circle or tile gets a fixed width and height plus \`alignItems\`/\`justifyContent: 'center'\`. Text over a graphic (a dial, a ring) shares one View sized like the graphic and sits in \`StyleSheet.absoluteFill\`, centred. A number with a unit uses \`flexDirection: 'row', alignItems: 'baseline'\`.
+
+### Avoid (these make an app look generated)
+
+- Purple/blue gradients by default, glassmorphism everywhere, drop shadows on everything.
+- Emoji anywhere in the UI (icons, empty states, headings) unless the user asks for them; a centred hero card saying "Welcome to X!".
+- Oversized pill buttons, every element in its own card, a different accent per screen.
+- Placeholder or lorem text, fake stats, decoration with no purpose.
+- The screen's title repeated in its content under a header that already shows it; the same message twice on one screen.`;
 
 const ICON_PROMPT_RULES = `**Icon prompt.** Describe an iOS app icon: one bold, simple glyph centered on a full-bleed background in the app's palette, high contrast, no text, no rounded corners, no border. Example: "iOS app icon, full-bleed square, a single white tomato-shaped timer glyph on a warm red to coral gradient, bold simple shapes, no text, no rounded corners, no border."
 
@@ -235,6 +319,17 @@ const PLATFORM_SECTIONS: Record<RuntimePlatform, string> = {
 // never changes within a run. (Per-turn icon status in the user message made
 // GLM 5.3 plan whole builds in its reasoning.)
 const prompts = new Map<string, string>();
+
+/**
+ * Per-app context, sent after the cached prompt. Only the vibe for now; it
+ * changes rarely, so the conversation still caches well.
+ */
+export function appContextFor(vibe: string | undefined): string {
+  const v = vibe?.trim();
+  return v
+    ? `## This app\n\nVibe (the user's words for how it should feel): "${v.replace(/"/g, "'")}"`
+    : '## This app\n\nVibe: none given, so new designs use the iOS native direction.';
+}
 
 export function systemPromptFor(autoAppIcons: boolean): string {
   const platform = runtimePlatform();

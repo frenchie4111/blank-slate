@@ -55,7 +55,10 @@ type Props = {
   onIncomingHandled: () => void;
 };
 
-type Draft = { mode: 'create' } | { mode: 'edit'; project: Project };
+type Draft = { mode: 'create' } | { mode: 'edit'; project: Project } | { mode: 'style'; project: Project };
+
+// Suggestions on the "How should it feel?" field. The first is the default.
+const VIBES = ['iOS native', 'Cozy', 'Bold', 'Minimal', 'Playful', 'Retro'];
 
 export function YourAppsScreen({
   projects,
@@ -125,6 +128,7 @@ export function YourAppsScreen({
     setMenuFor(null);
     if (!p) return;
     if (action === 'rename') setDraft({ mode: 'edit', project: p });
+    else if (action === 'style') setDraft({ mode: 'style', project: p });
     else if (action === 'share') setSharing(p);
     else if (action === 'delete') setPendingDelete(p);
     else if (p.id === currentId || projectStore.needsTrustNotice(p)) onChangeIcon(p.id);
@@ -467,7 +471,7 @@ export function YourAppsScreen({
   );
 }
 
-type MenuAction = 'rename' | 'icon' | 'share' | 'delete';
+type MenuAction = 'rename' | 'icon' | 'style' | 'share' | 'delete';
 
 // iOS-style context menu for a long-pressed tile. A plain overlay rather than
 // a Modal: Rename and Delete open Modals of their own, and iOS won't present
@@ -500,6 +504,7 @@ function TileMenu({
       <View style={styles.menu} accessibilityRole="menu">
         <MenuRow icon="pencil-outline" label="Rename" onPress={() => onAction('rename')} />
         <MenuRow icon="image-outline" label="Change icon" onPress={() => onAction('icon')} />
+        <MenuRow icon="color-palette-outline" label="Style…" onPress={() => onAction('style')} />
         <MenuRow icon="share-outline" label="Share" onPress={() => onAction('share')} />
         <MenuRow
           icon="trash-outline"
@@ -566,19 +571,22 @@ function AppSheet({
   const [name, setName] = React.useState('');
   const [tint, setTint] = React.useState<Tint>('yellow');
   const [glyph, setGlyph] = React.useState<Glyph | null>(null);
+  const [vibe, setVibe] = React.useState(VIBES[0]);
   const [busy, setBusy] = React.useState(false);
 
   React.useEffect(() => {
     if (!draft) return;
-    if (draft.mode === 'edit') {
+    if (draft.mode === 'create') {
+      setName('');
+      setTint(defaultTint(String(Date.now())));
+      setGlyph(null);
+      setVibe(VIBES[0]);
+    } else {
       const look = appearanceOf(draft.project);
       setName(draft.project.name);
       setTint(look.tint);
       setGlyph(look.glyph);
-    } else {
-      setName('');
-      setTint(defaultTint(String(Date.now())));
-      setGlyph(null);
+      setVibe(draft.project.vibe ?? '');
     }
   }, [draft]);
 
@@ -590,8 +598,11 @@ function AppSheet({
     setBusy(true);
     try {
       if (draft.mode === 'create') {
-        const project = await projectStore.create(name, { tint, glyph: shownGlyph });
+        const project = await projectStore.create(name, { tint, glyph: shownGlyph }, vibe);
         onCreated(project.id);
+      } else if (draft.mode === 'style') {
+        await projectStore.setVibe(draft.project.id, vibe);
+        onClose();
       } else {
         if (name.trim() && name.trim() !== draft.project.name) {
           await projectStore.rename(draft.project.id, name);
@@ -625,60 +636,88 @@ function AppSheet({
         >
           {wide ? null : <View style={styles.grabber} />}
           <View style={styles.sheetHead}>
-            <AppIcon tint={tint} glyph={shownGlyph} size={56} />
-            <Text style={styles.sheetTitle}>{draft?.mode === 'edit' ? 'Edit app' : 'New app'}</Text>
+            {draft?.mode === 'style' ? (
+              <AppIcon project={draft.project} size={56} />
+            ) : (
+              <AppIcon tint={tint} glyph={shownGlyph} size={56} />
+            )}
+            <View style={styles.sheetHeadText}>
+              <Text style={styles.sheetTitle}>
+                {draft?.mode === 'edit' ? 'Edit app' : draft?.mode === 'style' ? 'Style' : 'New app'}
+              </Text>
+              {draft?.mode === 'style' ? (
+                <Text style={styles.sheetNote} numberOfLines={1}>
+                  {draft.project.name}
+                </Text>
+              ) : null}
+            </View>
           </View>
 
-          <TextInput
-            value={name}
-            onChangeText={setName}
-            placeholder="Name, e.g. Habit tracker"
-            placeholderTextColor={colors.dust}
-            style={styles.input}
-            autoFocus={draft?.mode === 'create'}
-            onSubmitEditing={submit}
-            returnKeyType="done"
-            accessibilityLabel="App name"
-          />
+          {draft?.mode === 'style' ? (
+            <>
+              <VibeField value={vibe} onChange={setVibe} autoFocus={false} />
+              <Text style={styles.sheetNote}>
+                Nothing changes right away. The agent uses it the next time it works on how the app
+                looks, or ask it to restyle the app.
+              </Text>
+            </>
+          ) : (
+            <>
+              <TextInput
+                keyboardAppearance="dark"
+                value={name}
+                onChangeText={setName}
+                placeholder="Name, e.g. Habit tracker"
+                placeholderTextColor={colors.dust}
+                style={styles.input}
+                autoFocus={draft?.mode === 'create'}
+                onSubmitEditing={submit}
+                returnKeyType="done"
+                accessibilityLabel="App name"
+              />
 
-          <Text style={type.sectionLabel}>Colour</Text>
-          <View style={styles.swatches}>
-            {TINT_KEYS.map((k) => (
-              <Pressable
-                key={k}
-                onPress={() => setTint(k)}
-                style={[styles.swatch, { backgroundColor: TINTS[k].bg }, tint === k && styles.swatchOn]}
-                accessibilityRole="radio"
-                accessibilityState={{ selected: tint === k }}
-                accessibilityLabel={k}
-              >
-                <View style={[styles.swatchDot, { backgroundColor: TINTS[k].fg }]} />
-              </Pressable>
-            ))}
-          </View>
+              {draft?.mode === 'create' ? <VibeField value={vibe} onChange={setVibe} /> : null}
 
-          <Text style={type.sectionLabel}>Icon</Text>
-          <View style={styles.glyphs}>
-            {GLYPHS.map((g) => {
-              const on = g === shownGlyph;
-              return (
-                <Pressable
-                  key={g}
-                  onPress={() => setGlyph(g)}
-                  style={[styles.glyphBtn, on && styles.glyphBtnOn]}
-                  accessibilityRole="radio"
-                  accessibilityState={{ selected: on }}
-                  accessibilityLabel={g}
-                >
-                  <Ionicons
-                    name={`${g}-outline`}
-                    size={20}
-                    color={on ? TINTS[tint].fg : colors.dust}
-                  />
-                </Pressable>
-              );
-            })}
-          </View>
+              <Text style={type.sectionLabel}>Colour</Text>
+              <View style={styles.swatches}>
+                {TINT_KEYS.map((k) => (
+                  <Pressable
+                    key={k}
+                    onPress={() => setTint(k)}
+                    style={[styles.swatch, { backgroundColor: TINTS[k].bg }, tint === k && styles.swatchOn]}
+                    accessibilityRole="radio"
+                    accessibilityState={{ selected: tint === k }}
+                    accessibilityLabel={k}
+                  >
+                    <View style={[styles.swatchDot, { backgroundColor: TINTS[k].fg }]} />
+                  </Pressable>
+                ))}
+              </View>
+
+              <Text style={type.sectionLabel}>Icon</Text>
+              <View style={styles.glyphs}>
+                {GLYPHS.map((g) => {
+                  const on = g === shownGlyph;
+                  return (
+                    <Pressable
+                      key={g}
+                      onPress={() => setGlyph(g)}
+                      style={[styles.glyphBtn, on && styles.glyphBtnOn]}
+                      accessibilityRole="radio"
+                      accessibilityState={{ selected: on }}
+                      accessibilityLabel={g}
+                    >
+                      <Ionicons
+                        name={`${g}-outline`}
+                        size={20}
+                        color={on ? TINTS[tint].fg : colors.dust}
+                      />
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </>
+          )}
 
           {stopsBuild && draft?.mode === 'create' ? (
             <Text style={styles.sheetNote}>Creating an app stops the build that's running.</Text>
@@ -700,7 +739,7 @@ function AppSheet({
                 <ActivityIndicator size="small" color={colors.slate} />
               ) : (
                 <Text style={styles.btnPrimaryText}>
-                  {draft?.mode === 'edit' ? 'Save' : 'Create app'}
+                  {draft?.mode === 'create' ? 'Create app' : 'Save'}
                 </Text>
               )}
             </Pressable>
@@ -708,6 +747,52 @@ function AppSheet({
         </View>
       </KeyboardAvoidingView>
     </Modal>
+  );
+}
+
+// "How should it feel?": suggestion chips plus free text, one value.
+function VibeField({
+  value,
+  onChange,
+  autoFocus,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  autoFocus?: boolean;
+}) {
+  const picked = VIBES.find((v) => v.toLowerCase() === value.trim().toLowerCase());
+  return (
+    <View style={styles.vibe}>
+      <Text style={type.sectionLabel}>How should it feel?</Text>
+      <View style={styles.chips}>
+        {VIBES.map((v) => {
+          const on = v === picked;
+          return (
+            <Pressable
+              key={v}
+              onPress={() => onChange(on ? '' : v)}
+              style={({ pressed }) => [styles.chip, on && styles.chipOn, pressed && styles.pressed]}
+              accessibilityRole="radio"
+              accessibilityState={{ selected: on }}
+            >
+              <Text style={[styles.chipText, on && styles.chipTextOn]}>{v}</Text>
+            </Pressable>
+          );
+        })}
+      </View>
+      <TextInput
+        keyboardAppearance="dark"
+        value={picked ? '' : value}
+        onChangeText={onChange}
+        placeholder={picked ? 'Or describe it in your own words' : 'e.g. calm, like a paper notebook'}
+        placeholderTextColor={colors.dust}
+        style={[styles.input, styles.vibeInput]}
+        autoFocus={autoFocus}
+        maxLength={projectStore.MAX_VIBE_LENGTH}
+        returnKeyType="done"
+        accessibilityLabel="How should it feel?"
+      />
+    </View>
   );
 }
 
@@ -952,6 +1037,7 @@ const styles = StyleSheet.create({
     marginBottom: 6,
   },
   sheetHead: { flexDirection: 'row', alignItems: 'center', gap: 14 },
+  sheetHeadText: { flex: 1, minWidth: 0, gap: 2 },
   sheetTitle: { ...type.header, fontSize: 22, color: colors.chalk },
   sheetNote: { fontFamily: fonts.body, fontSize: 13, color: colors.dust },
   input: {
@@ -965,6 +1051,20 @@ const styles = StyleSheet.create({
     fontFamily: fonts.body,
     fontSize: 15,
   },
+  vibe: { gap: 10 },
+  chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  chip: {
+    height: 36,
+    paddingHorizontal: 14,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: colors.lineStrong,
+    justifyContent: 'center',
+  },
+  chipOn: { backgroundColor: colors.chalk, borderColor: colors.chalk },
+  chipText: { fontFamily: fonts.bodyMedium, fontSize: 14, color: colors.chalkSoft },
+  chipTextOn: { color: colors.slate },
+  vibeInput: { height: 44, fontSize: 14 },
   swatches: { flexDirection: 'row', gap: 10 },
   swatch: {
     flex: 1,

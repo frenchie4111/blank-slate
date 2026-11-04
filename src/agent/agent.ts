@@ -2,13 +2,16 @@ import { streamChatCompletion, type ChatMessage, type ContentPart, type ToolCall
 import { LeftAppError, leftAppSince } from './appLifecycle';
 import { IMAGE_ATTACHED, IMAGE_DROPPED } from './debugTools';
 import { executeTool, SERVER_TOOL_DEFINITIONS, TOOL_DEFINITIONS, type ToolResult } from './tools';
-import { systemPromptFor } from './systemPrompt';
+import { appContextFor, systemPromptFor } from './systemPrompt';
 
 const MAX_TOKENS = 16384;
 // Reasoning models (GLM 5.3 especially) can spend the whole output budget
 // thinking and never call a tool. Capping reasoning at half leaves room to act.
 const REASONING_BUDGET = 8192;
-const MAX_TURNS = 25;
+// A full app (theme, shared components, several screens, then a review pass)
+// takes more rounds than an edit; at 25 settings-heavy builds ran out before
+// the review and were left broken.
+const MAX_TURNS = 40;
 // Tool-call progress (path, chars) re-renders at most this often.
 const TOOL_PROGRESS_INTERVAL_MS = 250;
 // Screenshots stay as images only while the turn that took them is running,
@@ -78,6 +81,8 @@ export type AgentConfig = {
   sessionId: string;
   // Picks the system prompt variant with or without auto app icons.
   autoAppIcons: boolean;
+  // How the user wants this app to feel (Project.vibe); unset means the default.
+  vibe?: string;
 };
 
 // How a turn ended. 'stopped' and 'error' still carry the partial history, so
@@ -111,7 +116,7 @@ export function runAgentTurn(
   const messages: ChatMessage[] =
     userText === null ? resumable(prior) : [...prior, { role: 'user', content: userText }];
   const startedAt = Date.now();
-  const systemMessage = systemMessageFor(config.autoAppIcons);
+  const systemMessage = systemMessageFor(config.autoAppIcons, config.vibe);
   const controller = new AbortController();
   let aborted: 'user' | 'stalled' | null = null;
 
@@ -311,12 +316,15 @@ export function runAgentTurn(
 // list are identical from request to request, so they form a stable cache
 // prefix; history is append-only after them. The breakpoint on
 // the system block is what Anthropic, Gemini and Qwen need for explicit
-// caching; OpenRouter translates it for OpenAI and drops it elsewhere.
-function systemMessageFor(autoAppIcons: boolean) {
+// caching; OpenRouter translates it for OpenAI and drops it elsewhere. The
+// app's vibe goes in a short block after the breakpoint, so changing it
+// leaves the shared prefix cached.
+function systemMessageFor(autoAppIcons: boolean, vibe: string | undefined) {
   return {
     role: 'system' as const,
     content: [
       { type: 'text', text: systemPromptFor(autoAppIcons), cache_control: { type: 'ephemeral' } },
+      { type: 'text', text: appContextFor(vibe) },
     ],
   };
 }

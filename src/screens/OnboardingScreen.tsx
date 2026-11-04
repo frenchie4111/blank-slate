@@ -74,6 +74,7 @@ export function OnboardingScreen({ onDone }: Props) {
         <View style={styles.field}>
           <Text style={styles.label}>OpenRouter API key</Text>
           <TextInput
+            keyboardAppearance="dark"
             value={key}
             onChangeText={(v) => {
               setKey(v);

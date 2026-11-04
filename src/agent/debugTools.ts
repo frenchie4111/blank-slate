@@ -1,6 +1,6 @@
 import * as history from '../debug/history';
-import { describeUi } from '../debug/instrument';
-import { captureApp } from '../debug/screenshot';
+import { autoChecks, describeUi } from '../debug/instrument';
+import { captureApp, waitForSettled } from '../debug/screenshot';
 import { describeScreenshot, modelAcceptsImages } from './vision';
 
 // Debugging tools: the generated app's runtime history, screenshots and UI
@@ -93,6 +93,7 @@ export async function executeDebugTool(
       return { ok: true, text: await describeUi() };
     case 'take_screenshot': {
       const question = optString(input.question);
+      const settled = await waitForSettled();
       const shot = await captureApp('agent');
       if (!shot.ok) {
         return {
@@ -100,7 +101,10 @@ export async function executeDebugTool(
           text: `No screenshot: ${shot.error}\n\nWhat the app is rendering instead:\n${await describeUi(60)}`,
         };
       }
-      return deliver(shot.event, question, ctx, true);
+      const res = await deliver(shot.event, question, ctx, true);
+      const note = settled ? '' : '\n(The app was still rebuilding when this was taken; take another once it has loaded.)';
+      // Checks the description can miss: unapplied styles, overlaps, clipping.
+      return { ...res, text: `${res.text}${note}\n\n${await autoChecks()}` };
     }
     case 'get_screenshot': {
       const id = Number(input.id);

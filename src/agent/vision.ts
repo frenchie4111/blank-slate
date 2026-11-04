@@ -37,12 +37,20 @@ export async function modelAcceptsImages(apiKey: string, model: string): Promise
   }
 }
 
-const SIDECAR_PROMPT = `You are the eyes of a coding agent that cannot see images. This is a screenshot of a small mobile app the agent is building in React Native. Describe it so the agent can debug the UI without seeing it:
+const SIDECAR_PROMPT = `You are the eyes of a coding agent that cannot see images. This is a screenshot of a small mobile app the agent is building in React Native. Describe it so the agent can fix the UI without seeing it:
 - Overall layout from top to bottom, with rough positions ("top bar", "centered", "bottom 20%").
 - Every piece of visible text, quoted exactly.
 - Every control that looks tappable (buttons, inputs, toggles, icons) and where it is.
-- Colors and theme briefly.
-- Anything that looks wrong: large empty areas, overlapping or clipped elements, unreadable contrast, content hidden under the notch or home indicator, error messages, missing content.
+- Colors, fonts and theme briefly.
+
+Then review it like a strict designer and list every visual defect under "Defects:", one per line with where it is. Look closely for:
+- Rows whose parts are stacked when they should sit side by side (an icon above its label, a switch below its text).
+- Icons not centered in their circle, tile or button; text not centered on the shape it labels (a value off-center in a dial or ring).
+- Text overlapping other text, icons, lines or graphics; text clipped, cut off or running off screen.
+- Misaligned left edges, uneven spacing between similar items, items that should line up but don't.
+- Unstyled-looking content: default fonts in a styled app, plain black text on a designed background, missing padding.
+- Large empty areas, unreadable contrast, content under the notch or home indicator, error messages.
+If there are no defects, write "Defects: none". Don't call something fine unless you checked it.
 Be concrete and compact. No preamble.`;
 
 export async function describeScreenshot(

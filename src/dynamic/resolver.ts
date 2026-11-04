@@ -1,4 +1,7 @@
 import type { ComponentType } from 'react';
+import { loadFontsUsedIn } from '../appkit/fonts';
+import * as history from '../debug/history';
+import { resetStyleLint } from '../debug/lint';
 import { moduleScope } from '../debug/instrument';
 import { getCurrentProjectIdSync } from '../project/store';
 import { sandboxedBuiltin, sandboxedScope } from '../sandbox';
@@ -111,6 +114,7 @@ async function compileFile(
   path: string,
   inFlight: Map<string, Exports>,
   projectId: string,
+  sources: string[],
 ): Promise<Exports> {
   const cacheKey = `${projectId}\0${path}`;
   const content = await readFile(path);
@@ -125,6 +129,7 @@ async function compileFile(
     return { uri: content };
   }
 
+  sources.push(content);
   const hash = hashContent(content);
   const cached = moduleCache.get(cacheKey);
   if (cached && cached.hash === hash) return cached.exports;
@@ -160,7 +165,7 @@ async function compileFile(
             `Tried ${CANDIDATE_EXTS.map((e) => `<path>${e}`).join(', ')} and index variants.`,
         );
       }
-      const depExports = await compileFile(resolved, inFlight, projectId);
+      const depExports = await compileFile(resolved, inFlight, projectId, sources);
       resolvedDeps.set(spec, depExports);
       continue;
     }
@@ -208,7 +213,17 @@ async function compileFile(
 
 export async function compileEntry(entry = 'App.tsx'): Promise<CompileResult> {
   try {
-    const exports = await compileFile(entry, new Map(), getCurrentProjectIdSync());
+    // An empty cache means every module is about to be re-evaluated (see
+    // invalidate), so style records start over with them.
+    if (moduleCache.size === 0) resetStyleLint();
+    const sources: string[] = [];
+    const exports = await compileFile(entry, new Map(), getCurrentProjectIdSync(), sources);
+    // Catalogue fonts the app names, loaded before it mounts so the first
+    // frame isn't in the system font. A failed load just falls back.
+    const failed = await loadFontsUsedIn(sources);
+    if (failed.length) {
+      history.record({ type: 'log', level: 'warn', text: `Fonts falling back to the system font: ${failed.join('; ')}` });
+    }
     const candidate = (exports.default ?? exports) as unknown;
     if (typeof candidate !== 'function' && typeof candidate !== 'object') {
       return {

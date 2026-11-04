@@ -3,15 +3,19 @@ import {
   ActivityIndicator,
   Pressable,
   ScrollView,
+  StatusBar,
   StyleSheet,
   Text,
   View,
+  useColorScheme,
 } from 'react-native';
 import { AppProbe } from '../debug/AppProbe';
 import * as history from '../debug/history';
 import { cleanStack } from '../debug/instrument';
-import { scheduleAutoCapture } from '../debug/screenshot';
+import { scheduleAutoCapture, setAppCompiling } from '../debug/screenshot';
 import { subscribe as subscribeVfs } from '../vfs/vfs';
+import { AppCoveredContext } from '../appkit/covered';
+import { gestureRoot } from './requireShim';
 import { compileEntry, invalidate, type CompileError, type CompileResult } from './resolver';
 
 export type RenderError = {
@@ -30,6 +34,8 @@ type Props = {
   onError?: (err: RenderError) => void;
   onClear?: () => void;
   onFix?: () => void;
+  // Blank Slate's own UI is on top of the app (see AppCoveredContext).
+  covered?: boolean;
 };
 
 type BoundaryProps = {
@@ -125,6 +131,7 @@ export function DynamicView({
   onError,
   onClear,
   onFix,
+  covered = false,
 }: Props) {
   const [result, setResult] = React.useState<CompileResult | null>(null);
   const [version, setVersion] = React.useState(0);
@@ -141,6 +148,7 @@ export function DynamicView({
     const unsub = subscribeVfs((change) => {
       lastChangeRef.current = change.path;
       invalidate(change.path);
+      setAppCompiling(true);
       // Clear result in the same tick so the stale Component doesn't
       // re-render (and potentially re-throw) against the new resetKey
       // before the fresh compile lands.
@@ -153,8 +161,11 @@ export function DynamicView({
   React.useEffect(() => {
     let alive = true;
     setResult(null);
+    setAppCompiling(true);
     compileEntry(entry).then((r) => {
-      if (alive) setResult(r);
+      if (!alive) return;
+      setResult(r);
+      setAppCompiling(false);
     });
     return () => {
       alive = false;
@@ -200,49 +211,65 @@ export function DynamicView({
   }
 
   return (
-    <AppProbe>
-      <ErrorBoundary
-        resetKey={`${entry}:${version}:${revision}`}
-        onError={(e, componentStack) => {
-          const ev = history.record({
-            type: 'error',
-            source: 'render',
-            text: `${e.name}: ${e.message} (while rendering)`,
-            detail: [
-              cleanStack(e.stack),
-              componentStack && `Component stack:${trimComponentStack(componentStack)}`,
-            ]
-              .filter(Boolean)
-              .join('\n'),
-          });
-          scheduleAutoCapture('render error');
-          onErrorRef.current?.({
-            stage: 'runtime',
-            path: entry,
-            message: e.message,
-            stack: e.stack,
-            eventId: ev?.id,
-          });
-        }}
-        onClear={() => onClearRef.current?.()}
-        onFix={onFix}
-      >
-        {!result ? (
-          <View style={styles.loading}>
-            <ActivityIndicator color="#666" />
-          </View>
-        ) : !result.ok ? (
-          <ErrorCardFromError error={result.error} onFix={onFix} />
-        ) : (
-          <View style={styles.renderWrap}>
-            <result.Component />
-          </View>
-        )}
-      </ErrorBoundary>
-    </AppProbe>
+    <AppCoveredContext.Provider value={covered}>
+      <AppProbe>
+        <ErrorBoundary
+          resetKey={`${entry}:${version}:${revision}`}
+          onError={(e, componentStack) => {
+            const ev = history.record({
+              type: 'error',
+              source: 'render',
+              text: `${e.name}: ${e.message} (while rendering)`,
+              detail: [
+                cleanStack(e.stack),
+                componentStack && `Component stack:${trimComponentStack(componentStack)}`,
+              ]
+                .filter(Boolean)
+                .join('\n'),
+            });
+            scheduleAutoCapture('render error');
+            onErrorRef.current?.({
+              stage: 'runtime',
+              path: entry,
+              message: e.message,
+              stack: e.stack,
+              eventId: ev?.id,
+            });
+          }}
+          onClear={() => onClearRef.current?.()}
+          onFix={onFix}
+        >
+          {!result ? (
+            <View style={styles.loading}>
+              <ActivityIndicator color="#666" />
+            </View>
+          ) : !result.ok ? (
+            <ErrorCardFromError error={result.error} onFix={onFix} />
+          ) : (
+            <AppRoot>
+              <result.Component />
+            </AppRoot>
+          )}
+        </ErrorBoundary>
+      </AppProbe>
+    </AppCoveredContext.Provider>
   );
 }
 
+// Swipeable rows and other gesture-handler views need a root above them.
+// The status bar defaults to the colour scheme (Blank Slate's own is light
+// on dark); the app's <Screen> or StatusBar refine it.
+function AppRoot({ children }: { children: React.ReactNode }) {
+  const Root = React.useMemo(gestureRoot, []) ?? View;
+  const dark = useColorScheme() === 'dark';
+  const covered = React.useContext(AppCoveredContext);
+  return (
+    <Root style={styles.renderWrap}>
+      {covered ? null : <StatusBar barStyle={dark ? 'light-content' : 'dark-content'} />}
+      {children}
+    </Root>
+  );
+}
 
 function trimComponentStack(stack: string): string {
   return stack

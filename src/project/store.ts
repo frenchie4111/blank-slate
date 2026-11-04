@@ -20,6 +20,9 @@ export type Project = {
   // agent's set_app_name must leave it alone. Missing on older projects: read
   // it with isNameSetByUser().
   nameSetByUser?: boolean;
+  // How the user wants the app to feel ("iOS native", "Cozy", free text).
+  // The agent sees it every turn; changing it restyles nothing by itself.
+  vibe?: string;
   // Set on apps added from a .blankslate file (src/share/bundle.ts). Their
   // code came from someone else, so the first open asks first.
   importedFrom?: ImportedFrom;
@@ -44,6 +47,11 @@ export type BundleContents = {
 };
 
 export const MAX_NAME_LENGTH = 40;
+export const MAX_VIBE_LENGTH = 120;
+
+export function cleanVibe(raw: string): string {
+  return raw.trim().replace(/\s+/g, ' ').slice(0, MAX_VIBE_LENGTH).trim();
+}
 
 // Placeholder names nobody chose on purpose: "First app", "New app",
 // "Untitled 3", "App 2", "My app".
@@ -156,6 +164,10 @@ async function loadProjects(): Promise<Project[]> {
           typeof (p as Project).name === 'string',
       )
       .map((p) => {
+        if (p.vibe !== undefined && typeof p.vibe !== 'string') {
+          const { vibe: _drop, ...rest } = p;
+          p = rest;
+        }
         if (p.iconPath === undefined || typeof p.iconPath === 'string') return p;
         const { iconPath: _drop, ...rest } = p;
         return rest;
@@ -270,12 +282,14 @@ export async function list(): Promise<Project[]> {
 export async function create(
   rawName: string,
   appearance: ProjectAppearance = {},
+  rawVibe = '',
 ): Promise<Project> {
   const projects = await loadProjects();
   const id = newId();
   const now = Date.now();
   const typed = cleanName(rawName);
   const name = typed || `Untitled ${projects.length + 1}`;
+  const vibe = cleanVibe(rawVibe);
   await writeProjectFile(id, 'App.tsx', STARTER_APP);
   const project: Project = {
     id,
@@ -285,6 +299,7 @@ export async function create(
     nameSetByUser: !!typed && !isGenericName(typed),
     tint: appearance.tint ?? defaultTint(id),
     ...(appearance.glyph ? { glyph: appearance.glyph } : {}),
+    ...(vibe ? { vibe } : {}),
   };
   await saveProjects([...projects, project]);
   emit();
@@ -434,6 +449,19 @@ export async function setAppearance(id: string, appearance: ProjectAppearance): 
   if (idx < 0) throw new Error(`project ${id} not found`);
   const next = projects.slice();
   next[idx] = { ...next[idx], ...appearance };
+  await saveProjects(next);
+  emit();
+}
+
+// An empty string clears it.
+export async function setVibe(id: string, rawVibe: string): Promise<void> {
+  const projects = await loadProjects();
+  const idx = projects.findIndex((p) => p.id === id);
+  if (idx < 0) throw new Error(`project ${id} not found`);
+  const next = projects.slice();
+  const { vibe: _old, ...rest } = next[idx];
+  const vibe = cleanVibe(rawVibe);
+  next[idx] = vibe ? { ...rest, vibe } : rest;
   await saveProjects(next);
   emit();
 }

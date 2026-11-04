@@ -169,6 +169,7 @@ export function SettingsScreen({ onBack, onResetKey, apiKey }: Props) {
           <View style={styles.customRow}>
             <View style={[styles.radio, customIsActive && styles.radioOn]} />
             <TextInput
+              keyboardAppearance="dark"
               value={customModel}
               onChangeText={setCustomModel}
               placeholder="Custom OpenRouter model ID"

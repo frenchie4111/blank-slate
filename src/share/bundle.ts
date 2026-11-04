@@ -2,6 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { sha256 } from '@noble/hashes/sha2.js';
 import Constants from 'expo-constants';
 import { strFromU8, strToU8, unzipSync, zipSync, type Zippable } from 'fflate';
+import { APP_KIT_VERSION } from '../appkit';
 import { appearanceOf, isGlyph, isTint } from '../project/appearance';
 import { loadChat, type ChatSnapshot } from '../project/chatStore';
 import * as projectStore from '../project/store';
@@ -60,6 +61,9 @@ export type Manifest = {
   format: typeof FORMAT;
   version: number;
   blankSlateVersion: string;
+  // The blank-slate/app helper API the app was built against. Missing from
+  // bundles made before it existed.
+  appKitVersion?: number;
   app: {
     name: string;
     createdAt: number;
@@ -184,6 +188,7 @@ export async function buildBundle(
     format: FORMAT,
     version: FORMAT_VERSION,
     blankSlateVersion: blankSlateVersion(),
+    appKitVersion: APP_KIT_VERSION,
     app: {
       name: project.name,
       createdAt: project.createdAt,
@@ -266,6 +271,12 @@ function checkManifest(raw: unknown): Manifest {
     format: FORMAT,
     version: raw.version,
     blankSlateVersion: typeof raw.blankSlateVersion === 'string' ? raw.blankSlateVersion.slice(0, 40) : 'unknown',
+    // Informational: the helper API only grows, so an app built against a
+    // newer one usually still runs, and a missing export is a compile error
+    // that names it.
+    ...(typeof raw.appKitVersion === 'number' && Number.isInteger(raw.appKitVersion) && raw.appKitVersion > 0
+      ? { appKitVersion: raw.appKitVersion }
+      : {}),
     app: {
       name: app.name,
       createdAt: num(app.createdAt, Date.now()),

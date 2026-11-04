@@ -6,7 +6,7 @@
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "scheme": "blank-slate",
-    "userInterfaceStyle": "light",
+    "userInterfaceStyle": "automatic",
     "jsEngine": "jsc",
     "newArchEnabled": true,
     "splash": {

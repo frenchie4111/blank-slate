@@ -1,6 +1,8 @@
 import * as React from 'react';
 import * as ReactNative from 'react-native';
 import * as history from './history';
+import { systemHex } from '../appkit/system';
+import { layoutProblems, lintedCreate, noteMissingIcon, styleProblems } from './lint';
 
 // Everything the generated app sees that reports into the debug history:
 // a scoped console/fetch/XHR/timers (passed in as module-scope bindings by the
@@ -328,6 +330,22 @@ let nextKey = 1;
 
 const InText = React.createContext(false);
 
+// Host views measure themselves. react-native-svg's web <Svg> is a class
+// holding its DOM element instead, which measures the same way RN Web does.
+function asMeasurable(node: unknown): Measurable | null {
+  if (!node) return null;
+  if (typeof (node as Measurable).measureInWindow === 'function') return node as Measurable;
+  const el = (node as { elementRef?: { current?: { getBoundingClientRect?: () => DOMRect } } }).elementRef;
+  if (typeof el?.current?.getBoundingClientRect !== 'function') return null;
+  return {
+    measureInWindow: (cb) => {
+      const r = el.current?.getBoundingClientRect?.();
+      if (r) cb(r.left, r.top, r.width, r.height);
+      else cb(NaN, NaN, 0, 0);
+    },
+  };
+}
+
 function useRegistered(
   name: string,
   props: React.RefObject<Record<string, unknown>>,
@@ -341,8 +359,9 @@ function useRegistered(
     (node: unknown) => {
       if (typeof forwarded === 'function') forwarded(node);
       else if (forwarded && typeof forwarded === 'object') (forwarded as React.RefObject<unknown>).current = node;
-      if (node && enabled && typeof (node as Measurable).measureInWindow === 'function') {
-        registry.set(key.current, { name, props, node: node as Measurable });
+      const measurable = enabled ? asMeasurable(node) : null;
+      if (measurable) {
+        registry.set(key.current, { name, props, node: measurable });
       } else {
         registry.delete(key.current);
       }
@@ -379,7 +398,15 @@ export async function appFrame(): Promise<Frame | null> {
   return appContainer?.measureInWindow ? measure(appContainer) : null;
 }
 
-type UiNode = { kind: string; name: string; label: string; extra: string; frame: Frame };
+type UiNode = {
+  kind: string;
+  name: string;
+  label: string;
+  extra: string;
+  frame: Frame;
+  hitSlop?: boolean;
+  svg?: Record<string, unknown>;
+};
 
 async function snapshotUi(): Promise<{ root: Frame | null; nodes: UiNode[] }> {
   const root = await appFrame();
@@ -403,7 +430,15 @@ async function snapshotUi(): Promise<{ root: Frame | null; nodes: UiNode[] }> {
     if (e.name === 'Text' && typeof p.onPress === 'function') extra += ' tappable';
     const label = e.name === 'Text' ? truncate(textOf(p.children).replace(/\s+/g, ' ').trim(), 80) : labelFor(p);
     if (e.name === 'Text' && !label) return;
-    nodes.push({ kind, name: e.name, label, extra, frame });
+    nodes.push({
+      kind,
+      name: e.name,
+      label,
+      extra,
+      frame,
+      hitSlop: p.hitSlop != null,
+      ...(e.name === 'Svg' ? { svg: p } : {}),
+    });
   });
   nodes.sort((a, b) => a.frame.y - b.frame.y || a.frame.x - b.frame.x);
   return { root, nodes };
@@ -414,9 +449,13 @@ const KIND: Record<string, string> = {
   TouchableOpacity: 'button',
   TouchableHighlight: 'button',
   Button: 'button',
+  RectButton: 'button',
+  BorderlessButton: 'button',
+  BaseButton: 'button',
   TextInput: 'input',
   Switch: 'switch',
   Text: 'text',
+  Svg: 'svg',
 };
 
 /** Compact, top-to-bottom dump of what the instrumented components rendered. */
@@ -434,7 +473,29 @@ export async function describeUi(maxLines = 120): Promise<string> {
     return `${n.kind.padEnd(6)} "${n.label}"${name}${n.extra}  ${r(f.x)},${r(f.y)} ${r(f.w)}×${r(f.h)}`;
   });
   if (nodes.length > maxLines) lines.push(`… ${nodes.length - maxLines} more`);
-  return `${head} ${nodes.length} elements, ${buttons} tappable.\n${lines.join('\n')}`;
+  const inputs = nodes.some((n) => n.kind === 'input' || n.kind === 'switch');
+  const stuck =
+    buttons === 0 && !inputs
+      ? '\nNothing on screen can be tapped or typed into: if this screen should let the user add or change anything, they have no way to.'
+      : '';
+  return `${head} ${nodes.length} elements, ${buttons} tappable.${stuck}\n${lines.join('\n')}${checksText(problems(root, nodes))}`;
+}
+
+function problems(root: Frame | null, nodes: UiNode[]): string[] {
+  return [...styleProblems(), ...layoutProblems(nodes, root)];
+}
+
+function checksText(found: string[]): string {
+  return found.length ? `\n\nAutomatic checks found:\n${found.map((p) => `- ${p}`).join('\n')}` : '';
+}
+
+/** Style and layout problems on screen now, for take_screenshot results. */
+export async function autoChecks(): Promise<string> {
+  const { root, nodes } = await snapshotUi();
+  const found = problems(root, nodes);
+  return found.length
+    ? checksText(found).trimStart()
+    : 'Automatic checks (unused or undefined styles, overlapping or clipped elements, small tap targets) found nothing.';
 }
 
 /** What's drawn at a point in the app view, innermost first, for unhandled taps. */
@@ -526,6 +587,83 @@ function wrapComponent(Base: React.ComponentType<any>, name: string, spec: Handl
 
 const PRESS: HandlerSpec = { record: { onPress: 'tap', onLongPress: 'long-press' } };
 
+// ---- system dialogs ---------------------------------------------------------------------
+
+type AlertButton = { text?: string; onPress?: (value?: string) => void; style?: 'default' | 'cancel' | 'destructive' };
+
+function alertButton(title: string, b: AlertButton): AlertButton {
+  if (typeof b?.onPress !== 'function') return b;
+  const label = b.text ?? 'OK';
+  return {
+    ...b,
+    onPress: (...args) => {
+      noteTap(history.record({ type: 'tap', source: 'Alert', text: `tap Alert "${title}" → "${label}"` }));
+      return guarded(b.onPress!, 'handler', () => `in Alert "${title}" button "${label}"`)(...args);
+    },
+  };
+}
+
+// react-native-web's Alert does nothing, so on web and desktop a delete
+// confirmation would never call back. Browser dialogs stand in for it.
+function webAlert(title: string, message?: string, buttons?: AlertButton[]): void {
+  const g = globalThis as { alert?: (s: string) => void; confirm?: (s: string) => boolean };
+  const text = message ? `${title}\n\n${message}` : title;
+  const list = buttons?.length ? buttons : [{ text: 'OK' }];
+  const cancel = list.find((b) => b.style === 'cancel');
+  const actions = list.filter((b) => b !== cancel);
+  if (list.length === 1) {
+    g.alert?.(text);
+    list[0].onPress?.();
+    return;
+  }
+  // One action: OK/Cancel. Several: offer each in turn until one is accepted.
+  for (const b of actions) {
+    const ask = actions.length === 1 ? text : `${text}\n\n${b.text ?? 'OK'}?`;
+    if (g.confirm?.(ask)) {
+      b.onPress?.();
+      return;
+    }
+  }
+  cancel?.onPress?.();
+}
+
+function instrumentedAlert(Base: Record<string, any>): Record<string, unknown> {
+  // Alert is a class: its statics aren't enumerable, so no spread.
+  return Object.freeze({
+    prompt: typeof Base.prompt === 'function' ? Base.prompt.bind(Base) : undefined,
+    alert: (title: string, message?: string, buttons?: AlertButton[], options?: unknown) => {
+      const names = (buttons ?? []).map((b) => b?.text ?? 'OK');
+      history.record({
+        type: 'lifecycle',
+        source: 'alert',
+        text: truncate(`Alert shown: "${title}"${names.length ? ` [${names.join(', ')}]` : ''}`, 300),
+      });
+      const wrapped = buttons?.map((b) => alertButton(title, b));
+      if (ReactNative.Platform.OS === 'web') return webAlert(title, message, wrapped);
+      return Base.alert(title, message, wrapped, options);
+    },
+  });
+}
+
+function instrumentedActionSheet(Base: Record<string, any> | undefined): Record<string, unknown> | undefined {
+  if (!Base) return Base;
+  return Object.freeze({
+    ...Base,
+    showActionSheetWithOptions: (options: { title?: string; options: string[] }, cb: (i: number) => void) => {
+      const title = options?.title ?? 'Action sheet';
+      history.record({
+        type: 'lifecycle',
+        source: 'alert',
+        text: truncate(`Action sheet shown: "${title}" [${(options?.options ?? []).join(', ')}]`, 300),
+      });
+      return Base.showActionSheetWithOptions(options, (i: number) => {
+        noteTap(history.record({ type: 'tap', source: 'ActionSheet', text: `tap Action sheet → "${options?.options?.[i] ?? i}"` }));
+        return guarded(cb, 'handler', () => `in action sheet "${title}" callback`)(i);
+      });
+    },
+  });
+}
+
 let instrumentedRN: Record<string, unknown> | null = null;
 
 /** react-native as generated code sees it. Built lazily, once. */
@@ -543,6 +681,10 @@ export function instrumentedReactNative(): Record<string, unknown> {
       always: { onFocus: 'focus', onSubmitEditing: 'submit' },
     }),
     Text: wrapComponent(RN.Text, 'Text', PRESS),
+    // create() tracks which styles are actually applied (see ./lint).
+    StyleSheet: Object.freeze({ ...RN.StyleSheet, create: lintedCreate(RN.StyleSheet.create) }),
+    Alert: instrumentedAlert(RN.Alert),
+    ActionSheetIOS: instrumentedActionSheet(RN.ActionSheetIOS),
   };
   const out: Record<string, unknown> = {};
   // Getters, so RN's lazy (and deprecated) exports aren't evaluated up front.
@@ -595,4 +737,161 @@ export function instrumentedSensors(mod: Record<string, any>): Record<string, un
   }
   instrumentedSensorsCache = Object.freeze(out);
   return instrumentedSensorsCache;
+}
+
+// ---- @react-navigation/native -------------------------------------------------------------
+
+type NavState = { index?: number; routes: Array<{ name: string; state?: NavState }> };
+
+function activeRouteName(state: NavState | undefined): string | undefined {
+  let route = state?.routes?.[state.index ?? state.routes.length - 1];
+  while (route?.state?.routes?.length) route = route.state.routes[route.state.index ?? route.state.routes.length - 1];
+  return route?.name;
+}
+
+// iOS system colours by default; the stock light/dark themes elsewhere.
+// Hex per scheme rather than PlatformColor: native headers resolve a
+// PlatformColor once and then miss the switch to dark mode.
+function defaultNavTheme(mod: Record<string, any>, dark: boolean): unknown {
+  const base = dark ? mod.DarkTheme : mod.DefaultTheme;
+  if (ReactNative.Platform.OS !== 'ios') return base;
+  const c = systemHex(dark ? 'dark' : 'light');
+  return {
+    ...base,
+    colors: {
+      primary: c.systemBlue,
+      background: c.systemBackground,
+      card: c.systemBackground,
+      text: c.label,
+      border: c.separator,
+      notification: c.systemRed,
+    },
+  };
+}
+
+let instrumentedNavigationCache: Record<string, unknown> | null = null;
+
+/**
+ * @react-navigation/native as generated code sees it: the container records
+ * screen changes to the history, never touches the browser tab title, and
+ * sits in its own independent tree inside Blank Slate.
+ */
+export function instrumentedNavigation(mod: Record<string, any>): Record<string, unknown> {
+  if (instrumentedNavigationCache) return instrumentedNavigationCache;
+  const Base = mod.NavigationContainer;
+  const Independent = mod.NavigationIndependentTree ?? React.Fragment;
+  const NavigationContainer = React.forwardRef<unknown, Record<string, any>>(function NavigationContainer(props, ref) {
+    const dark = ReactNative.useColorScheme() === 'dark';
+    const theme = React.useMemo(() => props.theme ?? defaultNavTheme(mod, dark), [props.theme, dark]);
+    const last = React.useRef<string | undefined>(undefined);
+    const onStateChange = (state: NavState | undefined) => {
+      const name = activeRouteName(state);
+      if (name && name !== last.current) {
+        history.record({ type: 'lifecycle', source: 'navigation', text: `Navigated to "${name}"` });
+      }
+      last.current = name;
+      if (typeof props.onStateChange === 'function') {
+        guarded(props.onStateChange, 'handler', () => 'in NavigationContainer onStateChange')(state);
+      }
+    };
+    return React.createElement(
+      Independent,
+      null,
+      React.createElement(Base, {
+        documentTitle: { enabled: false },
+        ...props,
+        theme,
+        onStateChange,
+        ref,
+      }),
+    );
+  });
+  const out: Record<string, unknown> = {};
+  for (const key of Object.keys(mod)) {
+    if (key === 'NavigationContainer') continue;
+    Object.defineProperty(out, key, { enumerable: true, get: () => mod[key] });
+  }
+  out.NavigationContainer = NavigationContainer;
+  instrumentedNavigationCache = Object.freeze(out);
+  return instrumentedNavigationCache;
+}
+
+// ---- react-native-gesture-handler ---------------------------------------------------------
+
+let instrumentedGestureHandlerCache: Record<string, unknown> | null = null;
+
+/** Gesture-handler buttons and Swipeable report taps and swipes like RN's touchables. */
+export function instrumentedGestureHandler(mod: Record<string, any>): Record<string, unknown> {
+  if (instrumentedGestureHandlerCache) return instrumentedGestureHandlerCache;
+  const wrapped: Record<string, unknown> = {};
+  for (const name of ['RectButton', 'BorderlessButton', 'BaseButton']) {
+    if (mod[name]) wrapped[name] = wrapComponent(mod[name], name, PRESS);
+  }
+  for (const name of ['TouchableOpacity', 'TouchableHighlight', 'TouchableWithoutFeedback']) {
+    if (mod[name]) wrapped[name] = wrapComponent(mod[name], name, PRESS);
+  }
+  if (mod.Swipeable) {
+    wrapped.Swipeable = wrapComponent(mod.Swipeable, 'Swipeable', {
+      record: { onSwipeableOpen: 'swipe' },
+    });
+  }
+  const out: Record<string, unknown> = {};
+  for (const key of Object.keys(mod)) {
+    if (key in wrapped) continue;
+    Object.defineProperty(out, key, { enumerable: true, get: () => mod[key] });
+  }
+  Object.assign(out, wrapped);
+  instrumentedGestureHandlerCache = Object.freeze(out);
+  return instrumentedGestureHandlerCache;
+}
+
+// ---- react-native-svg -----------------------------------------------------------------------
+
+let instrumentedSvgCache: Record<string, unknown> | null = null;
+
+/** react-native-svg with <Svg> registered, so layout checks see graphics. */
+export function instrumentedSvg(mod: Record<string, any>): Record<string, unknown> {
+  if (instrumentedSvgCache) return instrumentedSvgCache;
+  const Svg = wrapComponent(mod.default ?? mod.Svg, 'Svg', {});
+  const out: Record<string, unknown> = {};
+  for (const key of Object.keys(mod)) {
+    if (key === 'default' || key === 'Svg') continue;
+    Object.defineProperty(out, key, { enumerable: true, get: () => mod[key] });
+  }
+  Object.assign(out, { __esModule: true, default: Svg, Svg });
+  instrumentedSvgCache = Object.freeze(out);
+  return instrumentedSvgCache;
+}
+
+// ---- @expo/vector-icons ---------------------------------------------------------------------
+
+let instrumentedIconsCache: Record<string, unknown> | null = null;
+
+/** Icon sets that report names they don't have (drawn as "?"). */
+export function instrumentedVectorIcons(mod: Record<string, any>): Record<string, unknown> {
+  if (instrumentedIconsCache) return instrumentedIconsCache;
+  const out: Record<string, unknown> = {};
+  for (const key of Object.keys(mod)) {
+    const Set = mod[key];
+    const glyphs = Set?.glyphMap as Record<string, unknown> | undefined;
+    if (typeof Set !== 'function' || !glyphs || typeof glyphs !== 'object') {
+      Object.defineProperty(out, key, { enumerable: true, get: () => mod[key] });
+      continue;
+    }
+    const Checked = React.forwardRef<unknown, Record<string, unknown>>(function Icon(props, ref) {
+      if (typeof props.name === 'string' && !(props.name in glyphs)) noteMissingIcon(key, props.name, glyphs);
+      return React.createElement(Set, { ...props, ref });
+    });
+    Checked.displayName = key;
+    // Statics: glyphMap, Button, getImageSource, font.
+    for (const k of Object.keys(Set)) {
+      try {
+        (Checked as unknown as Record<string, unknown>)[k] = Set[k];
+      } catch {}
+    }
+    (Checked as unknown as Record<string, unknown>).glyphMap = glyphs;
+    out[key] = Checked;
+  }
+  instrumentedIconsCache = Object.freeze(out);
+  return instrumentedIconsCache;
 }

@@ -12,6 +12,26 @@ const AUTO_MIN_GAP_MS = 2500;
 
 let target: unknown = null;
 
+// Set by DynamicView: true from a file change until the new build is
+// mounted, so a capture never catches the loading spinner.
+let compiling = false;
+let mountedAt = 0;
+
+export function setAppCompiling(value: boolean): void {
+  compiling = value;
+  if (!value) mountedAt = Date.now();
+}
+
+/** Waits for the app to finish building and settle (fonts, first layout). */
+export async function waitForSettled(maxMs = 6000, settleMs = 700): Promise<boolean> {
+  const end = Date.now() + maxMs;
+  while (Date.now() < end) {
+    if (!compiling && Date.now() - mountedAt >= settleMs) return true;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  return false;
+}
+
 export function setCaptureTarget(node: unknown): void {
   target = node;
 }

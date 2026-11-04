@@ -1,4 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
+import { StatusBar } from 'expo-status-bar';
 import React from 'react';
 import {
   ActivityIndicator,
@@ -272,14 +273,21 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
         wrote = true;
       });
       try {
-        const [model, autoAppIcons] = await Promise.all([
+        const [model, autoAppIcons, , project] = await Promise.all([
           getModel(),
           getAutoAppIcons(),
           projectAtStart ? markTurnStarted(projectAtStart) : null,
+          projectAtStart ? projectStore.get(projectAtStart) : null,
         ]);
         if (stoppedRef.current) throw new Error('Aborted');
         const run = runAgentTurn(
-          { apiKey, model, sessionId: `blank-slate:${projectAtStart ?? 'default'}`, autoAppIcons },
+          {
+            apiKey,
+            model,
+            sessionId: `blank-slate:${projectAtStart ?? 'default'}`,
+            autoAppIcons,
+            vibe: project?.vibe,
+          },
           priorHistory,
           text,
           (ev) => {
@@ -643,6 +651,7 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
           <View style={[styles.composerWrap, { paddingBottom: 10 + insets.bottom }]}>
             <View style={styles.composer}>
               <TextInput
+                keyboardAppearance="dark"
                 value={input}
                 onChangeText={setInput}
                 placeholder="Describe something to build"
@@ -706,6 +715,7 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
             onError={handleRenderError}
             onClear={handleRenderClear}
             onFix={fixRenderErrorNow}
+            covered={(!wide && chatVisible) || appsOpen || settingsVisible}
           />
         ) : null}
       </View>
@@ -724,6 +734,7 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
 
       {wide ? null : chatVisible ? (
         <View style={styles.chatOverlay}>
+          <HostStatusBar />
           <KeyboardAvoidingView
             style={[StyleSheet.absoluteFill, { paddingTop: insets.top }]}
             behavior={Platform.OS === 'ios' ? 'padding' : undefined}
@@ -735,6 +746,7 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
 
       {appsOpen ? (
         <View style={styles.fullOverlay}>
+          <HostStatusBar />
           <YourAppsScreen
             projects={projects}
             currentId={currentId}
@@ -763,6 +775,7 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
 
       {settingsVisible ? (
         <View style={styles.fullOverlay}>
+          <HostStatusBar />
           <SettingsScreen
             apiKey={apiKey}
             onBack={() => setSettingsVisible(false)}
@@ -828,6 +841,7 @@ function ProjectTitle({ project }: { project: Project | null }) {
       <View style={styles.title}>
         <AppIcon project={project} size={24} />
         <TextInput
+          keyboardAppearance="dark"
           ref={inputRef}
           value={draft}
           onChangeText={setDraft}
@@ -1011,6 +1025,12 @@ function findLastIndex<T>(arr: T[], pred: (v: T) => boolean): number {
 // side) would otherwise scroll the whole page sideways, chat and all. 'clip',
 // unlike 'hidden', can't be scrolled by focus or scrollIntoView.
 const clipOnWeb = Platform.OS === 'web' ? ({ overflow: 'clip' } as object) : null;
+
+// Generated apps set the status bar to suit their own background. Blank
+// Slate's overlays are always dark, so each mounts its own light one on top.
+function HostStatusBar() {
+  return <StatusBar style="light" />;
+}
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.slate, ...clipOnWeb },
