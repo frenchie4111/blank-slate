@@ -43,7 +43,7 @@ import { SIDEBAR_WIDTH, useWideLayout } from '../theme/layout';
 import * as vfs from '../vfs/vfs';
 import { ChatList, newChatScrollMemory, type ChatScrollMemory } from './ChatList';
 import type { PendingCall } from './ToolGroup';
-import { Dock, DOCK_BAR_HEIGHT } from './Dock';
+import { Dock, DOCK_BAR_HEIGHT, dockChin } from './Dock';
 import { FilesPanel } from './FileViewer';
 import { HistoryPanel } from './HistoryPanel';
 import { SettingsScreen } from './SettingsScreen';
@@ -735,7 +735,8 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
     </>
   );
 
-  const dockHeight = DOCK_BAR_HEIGHT + insets.bottom;
+  const dockChinHeight = dockChin(insets.bottom);
+  const dockHeight = DOCK_BAR_HEIGHT + dockChinHeight;
   const viewportInsets = wide
     ? { top: 0, right: 0, bottom: 0, left: 0 }
     : { top: insets.top, right: insets.right, bottom: 0, left: insets.left };
@@ -757,7 +758,7 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
         <Animated.View
           style={[
             styles.dock,
-            { height: dockHeight, paddingBottom: insets.bottom },
+            { height: dockHeight, paddingBottom: dockChinHeight },
             { transform: [{ translateY: Animated.multiply(dockSlide, dockHeight) }] },
           ]}
           pointerEvents={dockHidden ? 'none' : 'auto'}

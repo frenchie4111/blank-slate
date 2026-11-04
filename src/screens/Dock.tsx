@@ -29,6 +29,16 @@ const PAD = 10;
 
 /** Height of the bottom dock's bar, not counting the home-indicator inset. */
 export const DOCK_BAR_HEIGHT = ITEM + 12;
+
+// How much of the bottom safe area the dock lets its bar reach into. The
+// home indicator only needs a sliver of clearance, so the icons sit down in
+// the chin instead of floating above a strip of empty slate.
+const CHIN_OVERLAP = 22;
+
+/** Bottom padding under the dock's bar for a given home-indicator inset. */
+export function dockChin(insetBottom: number): number {
+  return Math.max(0, insetBottom - CHIN_OVERLAP);
+}
 /** Width of the desktop rail. */
 export const RAIL_WIDTH = ITEM + 20;
 
