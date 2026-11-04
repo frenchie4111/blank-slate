@@ -100,8 +100,9 @@ notarization; the app runs on this Mac only. For an unsigned DMG: `npm run rende
 every six hours, downloads in the background, and shows a native dialog
 offering to restart when the update is ready. Choosing Later installs it on
 the next quit. "Check for Updates…" is in the app menu on macOS and in Help on
-Windows. The UI is all native, so the preload still exposes only
-`claimSecureStore()`. Unpackaged runs (`npm start`) don't check.
+Windows. The UI is all native, so the updater adds nothing to the preload
+bridge, which still exposes only the one-shot `claimSecureStore()` and
+`claimMcpHost()`. Unpackaged runs (`npm start`) don't check.
 
 The feed is the newest **published** GitHub Release: `latest-mac.yml` (which
 points at the zips) and `latest.yml` (the Windows installer), uploaded by
