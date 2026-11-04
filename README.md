@@ -9,9 +9,9 @@ In this crazy era of "software is dead" I have found myself building one-off app
 I see this as an experiment/exploration into what apps will become when phones actually allow fully-personalized apps to exist.
 
 <p>
-  <img src="docs/images/your-apps.png" alt="The Your apps grid with two generated apps" width="260">
-  <img src="docs/images/chat.png" alt="A chat mid-build, with a group of tool calls in progress" width="260">
-  <img src="docs/images/app.png" alt="A generated habit tracker running, with the dock below it" width="260">
+  <img src="docs/images/your-apps.png" alt="The Your apps grid with two apps, Midterms and Pomodoro Timer, each with its generated icon" width="260">
+  <img src="docs/images/chat.png" alt="A chat where the agent has just added an 'odds updated' timestamp to Midterms, with its group of file edits expanded" width="260">
+  <img src="docs/images/app.png" alt="Midterms, a generated tracker of live Polymarket midterm odds, running with the dock below it" width="260">
 </p>
 
 ## Features
