@@ -11,6 +11,7 @@ import {
   type NativeScrollEvent,
   type NativeSyntheticEvent,
 } from 'react-native';
+import { StoreAppIcon } from '../appstore/AppStoreScreen';
 import { AppIcon } from '../components/AppIcon';
 import type { Project } from '../project/store';
 import { colors, radii } from '../theme';
@@ -18,7 +19,7 @@ import { LogoMark } from '../theme/LogoMark';
 import { useAppActions } from './YourAppsScreen';
 
 // Blank Slate's own strip beside the generated app: the logo (opens the
-// chat), then every app in Your apps order, then "+". Along the bottom on a
+// chat), the App Store, then every app in Your apps order, then "+". Along the bottom on a
 // phone, down the left edge on desktop.
 
 const ICON = 44;
@@ -47,6 +48,9 @@ type Props = {
   currentId: string | null;
   vertical?: boolean;
   onLogo: () => void;
+  // The App Store is showing in the viewport.
+  storeOpen: boolean;
+  onStore: () => void;
 };
 
 function webContextMenu(fn: () => void): object | null {
@@ -59,19 +63,22 @@ function webContextMenu(fn: () => void): object | null {
   };
 }
 
-export function Dock({ projects, currentId, vertical = false, onLogo }: Props) {
+export function Dock({ projects, currentId, vertical = false, onLogo, storeOpen, onStore }: Props) {
   const actions = useAppActions();
   const scrollRef = React.useRef<ScrollView | null>(null);
   const scrollPos = React.useRef(0);
   const [viewLength, setViewLength] = React.useState(0);
 
-  const currentIndex = projects.findIndex((p) => p.id === currentId);
+  // The store counts as the current app while it's showing.
+  const shownId = storeOpen ? null : currentId;
+  const currentIndex = storeOpen ? -1 : projects.findIndex((p) => p.id === currentId);
 
   // Keep the current app in view: after a switch, or when the list or the
   // dock's size changes. Only scrolls when it's (partly) out of view.
   React.useEffect(() => {
     if (currentIndex < 0 || !viewLength) return;
-    const start = PAD + currentIndex * (ITEM + GAP);
+    // +1: the App Store comes first.
+    const start = PAD + (currentIndex + 1) * (ITEM + GAP);
     const end = start + ITEM;
     const pos = scrollPos.current;
     if (start >= pos && end <= pos + viewLength) return;
@@ -90,7 +97,7 @@ export function Dock({ projects, currentId, vertical = false, onLogo }: Props) {
   };
 
   const tap = (p: Project) => {
-    if (actions.busy || p.id === currentId) return;
+    if (actions.busy || p.id === shownId) return;
     if (Platform.OS !== 'web') Haptics.selectionAsync().catch(() => {});
     actions.open(p);
   };
@@ -118,8 +125,17 @@ export function Dock({ projects, currentId, vertical = false, onLogo }: Props) {
         scrollEventThrottle={32}
         accessibilityRole="tablist"
       >
+        <Pressable
+          onPress={storeOpen ? undefined : onStore}
+          style={({ pressed }) => [styles.item, storeOpen && styles.itemCurrent, pressed && styles.pressed]}
+          accessibilityRole="tab"
+          accessibilityState={{ selected: storeOpen }}
+          accessibilityLabel="App Store"
+        >
+          <StoreAppIcon size={ICON} />
+        </Pressable>
         {projects.map((p) => {
-          const isCurrent = p.id === currentId;
+          const isCurrent = p.id === shownId;
           return (
             <Pressable
               key={p.id}

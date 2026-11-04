@@ -53,6 +53,26 @@ Then review it like a strict designer and list every visual defect under "Defect
 If there are no defects, write "Defects: none". Don't call something fine unless you checked it.
 Be concrete and compact. No preamble.`;
 
+const REFERENCE_PROMPT = `You are the eyes of a coding agent that cannot see images. This is a reference design (for example an App Store screenshot) of a mobile app screen that the agent must recreate in React Native. Describe it as a precise build spec:
+- Ignore marketing around the phone (headline, backdrop); describe only the app screen itself, but quote the headline once at the start.
+- Every element from top to bottom: what it is (header, card, list row, chart, tab bar…), its position and rough size as a fraction of the screen, alignment and spacing.
+- Every piece of visible text, quoted exactly, with its rough size and weight.
+- Colours as hex estimates for background, surfaces, text and accent; corner roundness; shadows; borders.
+- Typography: serif / sans / mono / display / handwritten, weights, letter case.
+- Icons and imagery: what each depicts and where.
+Be concrete and compact. No preamble.`;
+
+export async function describeReference(
+  apiKey: string,
+  dataUrl: string,
+  question: string | undefined,
+  signal?: AbortSignal,
+): Promise<{ text: string; cost: number | null; model: string }> {
+  const prompt = question ? `${REFERENCE_PROMPT}\n\nThe agent specifically asks: ${question}` : REFERENCE_PROMPT;
+  const r = await describeImage(apiKey, VISION_MODEL, dataUrl, prompt, signal);
+  return { text: r.text, cost: r.cost, model: VISION_MODEL };
+}
+
 export async function describeScreenshot(
   apiKey: string,
   dataUrl: string,

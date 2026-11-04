@@ -8,7 +8,8 @@ import {
   setIcon,
 } from '../project/store';
 import { deleteFile, isImagePath, listFiles, normalizePath, readFile, writeFile } from '../vfs/vfs';
-import { DEBUG_FUNCTION_TOOLS, DEBUG_TOOL_NAMES, executeDebugTool } from './debugTools';
+import { DEBUG_FUNCTION_TOOLS, DEBUG_TOOL_NAMES, executeDebugTool, IMAGE_ATTACHED } from './debugTools';
+import { describeReference, modelAcceptsImages } from './vision';
 import { IMAGE_MODEL } from './models';
 import { generateImage } from './openrouter';
 
@@ -92,6 +93,19 @@ const FUNCTION_TOOLS: FunctionTool[] = [
         },
       },
       required: ['prompt', 'path'],
+    },
+  },
+  {
+    name: 'view_image',
+    description:
+      'Look at an image file in the project: a reference design such as the App Store screenshots in design/, or an asset you generated. Use it before recreating a design.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'e.g. "design/store-screenshot-1.jpg"' },
+        question: { type: 'string', description: 'What you want to know about it, if anything specific.' },
+      },
+      required: ['path'],
     },
   },
   {
@@ -180,6 +194,26 @@ export async function executeTool(
           ok: true,
           text: `Saved image to ${path} (${Math.round(dataUrl.length / 1024)} KB${costNote}). Import it with a relative path and pass it to <Image source={...} />.`,
         };
+      }
+      case 'view_image': {
+        const path = normalizePath(requireString(input, 'path'));
+        const question = typeof input.question === 'string' && input.question.trim() ? input.question.trim() : undefined;
+        if (!isImagePath(path)) return { ok: false, text: `${path} is not an image (.png, .jpg, .jpeg, .webp or .gif).` };
+        const content = await readFile(path);
+        if (content === null) return { ok: false, text: `File not found: ${path}` };
+        if (!content.startsWith('data:image/')) return { ok: false, text: `${path} does not contain image data.` };
+        if (await modelAcceptsImages(ctx.apiKey, ctx.model)) {
+          return {
+            ok: true,
+            text: `${path}. ${IMAGE_ATTACHED}`,
+            image: {
+              dataUrl: content,
+              caption: `(view_image result, attached automatically) ${path}${question ? `. Check: ${question}` : ''}`,
+            },
+          };
+        }
+        const seen = await describeReference(ctx.apiKey, content, question, ctx.signal);
+        return { ok: true, text: `${path}, as described by ${seen.model}:\n\n${seen.text}` };
       }
       case 'set_app_icon': {
         const path = normalizePath(requireString(input, 'path'));

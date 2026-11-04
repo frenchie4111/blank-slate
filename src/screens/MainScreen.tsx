@@ -15,6 +15,9 @@ import {
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { AppStoreScreen } from '../appstore/AppStoreScreen';
+import { buildPrompt, tileFor, type Listing } from '../appstore/catalog';
+import * as shotImages from '../appstore/shotImages';
 import { runAgentTurn, type AgentEvent, type AgentRun } from '../agent/agent';
 import type { ChatMessage } from '../agent/openrouter';
 import { AppViewport } from '../dynamic/AppViewport';
@@ -78,6 +81,9 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
   // Desktop only: the chat sidebar can be hidden to give the app the window.
   const [sidebarOpen, setSidebarOpen] = React.useState(true);
   const [settingsVisible, setSettingsVisible] = React.useState(false);
+  // The App Store is showing in the viewport, over the current app (which
+  // stays mounted underneath).
+  const [storeOpen, setStoreOpen] = React.useState(false);
   const [projects, setProjects] = React.useState<Project[]>([]);
   const [currentId, setCurrentId] = React.useState<string | null>(null);
   // Every cold launch lands on the Your apps home screen.
@@ -104,6 +110,9 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
   const stoppedRef = React.useRef(false);
   const chatScrollRef = React.useRef<ChatScrollMemory>(newChatScrollMemory());
   const activeProjectRef = React.useRef<string | null>(null);
+  // The chat load a project switch started. A turn started right after the
+  // switch (App Store installs) waits for it, or the load would wipe the turn.
+  const chatLoadRef = React.useRef<Promise<void>>(Promise.resolve());
   const renderErrorRef = React.useRef<RenderError | null>(null);
   const viewportRef = React.useRef<React.ComponentRef<typeof Animated.View> | null>(null);
 
@@ -164,7 +173,7 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
       setCurrentId(nextId);
       setEntries([]);
       historyRef.current = [];
-      loadChat(nextId).then((snapshot) => {
+      chatLoadRef.current = loadChat(nextId).then((snapshot) => {
         if (activeProjectRef.current !== nextId) return;
         historyRef.current = snapshot.history;
         setEntries(snapshot.entries);
@@ -543,9 +552,34 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
     const chat = opts.chat || (await isUntouched(id));
     setAppOpened(true);
     setAppsOpen(false);
+    setStoreOpen(false);
     if (chat) setActiveTab('chat');
     setChatVisible(chat);
     if (opts.draft !== undefined) setInput(opts.draft);
+  };
+
+  // "Get" in the App Store: a new project named and styled after the listing,
+  // opened on its chat with the listing sent as the first request.
+  // Its screenshots go into the project as the design the agent recreates;
+  // any not generated yet are made first (the Get button spins meanwhile).
+  const installFromStore = async (listing: Listing) => {
+    const shots = await shotImages.collect(apiKey, listing);
+    const project = await projectStore.create(listing.name, tileFor(listing), listing.vibe);
+    await enterApp(project.id, { chat: true });
+    const paths: string[] = [];
+    for (const [i, dataUrl] of shots.entries()) {
+      const path = `design/store-screenshot-${i + 1}.${dataUrl?.startsWith('data:image/jpeg') ? 'jpg' : 'png'}`;
+      if (dataUrl && (await vfs.writeFile(path, dataUrl).then(() => true, () => false))) paths[i] = path;
+    }
+    await chatLoadRef.current.catch(() => {});
+    runTurn(buildPrompt(listing, paths));
+  };
+
+  // Opening the store switches no project, so a running build carries on.
+  const openStore = () => {
+    setStoreOpen(true);
+    setAppsOpen(false);
+    setChatVisible(false);
   };
 
   const acceptTrust = async () => {
@@ -752,7 +786,16 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
         onCreated={(id) => enterApp(id, { chat: true })}
         onChangeIcon={(id) => enterApp(id, { chat: true, draft: 'Make a new app icon for this app' })}
       >
-      {wide ? <Dock vertical projects={projects} currentId={currentId} onLogo={openChat} /> : null}
+      {wide ? (
+        <Dock
+          vertical
+          projects={projects}
+          currentId={currentId}
+          onLogo={openChat}
+          storeOpen={storeOpen}
+          onStore={openStore}
+        />
+      ) : null}
 
       {wide ? null : (
         <Animated.View
@@ -765,7 +808,13 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
           accessibilityElementsHidden={dockHidden}
           importantForAccessibility={dockHidden ? 'no-hide-descendants' : 'auto'}
         >
-          <Dock projects={projects} currentId={currentId} onLogo={openChat} />
+          <Dock
+            projects={projects}
+            currentId={currentId}
+            onLogo={openChat}
+            storeOpen={storeOpen}
+            onStore={openStore}
+          />
         </Animated.View>
       )}
 
@@ -787,8 +836,23 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
               onError={handleRenderError}
               onClear={handleRenderClear}
               onFix={fixRenderErrorNow}
-              covered={(!wide && chatVisible) || appsOpen || settingsVisible}
+              covered={(!wide && chatVisible) || appsOpen || settingsVisible || storeOpen}
             />
+          ) : null}
+          {storeOpen ? (
+            <View style={styles.storePane}>
+              <AppStoreScreen
+                apiKey={apiKey}
+                projects={projects}
+                running={running}
+                onHome={() => {
+                  setStoreOpen(false);
+                  setAppsOpen(true);
+                }}
+                onInstall={installFromStore}
+                onOpenProject={(id) => enterApp(id)}
+              />
+            </View>
           ) : null}
         </AppViewport>
       </View>
@@ -814,6 +878,7 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
             projects={projects}
             currentId={currentId}
             onSettings={() => setSettingsVisible(true)}
+            onStore={openStore}
             onOpen={(id, opts) => enterApp(id, opts)}
             incoming={incoming}
             onIncomingHandled={clearIncoming}
@@ -1127,6 +1192,7 @@ const styles = StyleSheet.create({
   pressed: { opacity: 0.7 },
   chatOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: colors.slate },
   fullOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: colors.slate },
+  storePane: { ...StyleSheet.absoluteFillObject, backgroundColor: colors.slate },
 
   chatHeader: {
     flexDirection: 'row',

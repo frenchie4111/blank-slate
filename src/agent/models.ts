@@ -13,6 +13,10 @@ export const IMAGE_MODEL = 'google/gemini-nano-banana-2.1';
 // GLM 5.3, is text-only). Cheap and vision-capable.
 export const VISION_MODEL = 'z-ai/glm-5.3-flash';
 
+// Dreams up the App Store's listings. One JSON reply per search, so fast and
+// cheap matters more than clever.
+export const STORE_MODEL = 'z-ai/glm-5.3-flash';
+
 export const MODEL_OPTIONS: ModelOption[] = [
   { id: 'z-ai/glm-5.3', label: 'GLM 5.3', note: 'Z.ai flagship, strong agentic coding · $0.08 / $3.60' },
   { id: 'z-ai/glm-5.3-flash', label: 'GLM 5.3 Flash', note: 'Very cheap and fast · $0.03 / $0.09' },
