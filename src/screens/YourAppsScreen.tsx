@@ -34,6 +34,7 @@ import { BundleError, importBundle } from '../share/bundle';
 import { pickBundle, readWebFile, ShareUnavailableError, type PickedBundle } from '../share/io';
 import { ShareSheet } from '../share/ShareSheet';
 import { useWideLayout } from '../theme/layout';
+import { useKeyboardShown } from './useKeyboardShown';
 
 type Props = {
   projects: Project[];
@@ -639,6 +640,8 @@ function AppSheet({
 }) {
   const insets = useSafeAreaInsets();
   const wide = useWideLayout();
+  const keyboardRef = React.useRef(null);
+  const keyboard = useKeyboardShown(!!draft, keyboardRef);
   const [name, setName] = React.useState('');
   const [tint, setTint] = React.useState<Tint>('yellow');
   const [glyph, setGlyph] = React.useState<Glyph | null>(null);
@@ -694,105 +697,118 @@ function AppSheet({
       onRequestClose={onClose}
     >
       <KeyboardAvoidingView
-        style={[styles.sheetBackdrop, wide && styles.sheetBackdropWide]}
+        style={[
+          styles.sheetBackdrop,
+          wide ? styles.sheetBackdropWide : { paddingTop: insets.top + 12 },
+        ]}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
         <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
         <View
           style={[
             styles.sheet,
-            { paddingBottom: Math.max(insets.bottom, 16) + 8 },
+            // The home indicator sits under the keyboard while it's up.
+            { paddingBottom: (keyboard.shown ? 16 : Math.max(insets.bottom, 16)) + 8 },
             wide && styles.sheetWide,
           ]}
         >
           {wide ? null : <View style={styles.grabber} />}
-          <View style={styles.sheetHead}>
-            {draft?.mode === 'style' ? (
-              <AppIcon project={draft.project} size={56} />
-            ) : (
-              <AppIcon tint={tint} glyph={shownGlyph} size={56} />
-            )}
-            <View style={styles.sheetHeadText}>
-              <Text style={styles.sheetTitle}>
-                {draft?.mode === 'edit' ? 'Edit app' : draft?.mode === 'style' ? 'Style' : 'New app'}
-              </Text>
+          {/* Scrolls so the title and fields stay reachable when the keyboard
+              pushes the sheet up on a short screen. */}
+          <ScrollView
+            style={styles.sheetScroll}
+            contentContainerStyle={styles.sheetBody}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+          >
+            <View style={styles.sheetHead}>
               {draft?.mode === 'style' ? (
-                <Text style={styles.sheetNote} numberOfLines={1}>
-                  {draft.project.name}
+                <AppIcon project={draft.project} size={56} />
+              ) : (
+                <AppIcon tint={tint} glyph={shownGlyph} size={56} />
+              )}
+              <View style={styles.sheetHeadText}>
+                <Text style={styles.sheetTitle}>
+                  {draft?.mode === 'edit' ? 'Edit app' : draft?.mode === 'style' ? 'Style' : 'New app'}
                 </Text>
-              ) : null}
+                {draft?.mode === 'style' ? (
+                  <Text style={styles.sheetNote} numberOfLines={1}>
+                    {draft.project.name}
+                  </Text>
+                ) : null}
+              </View>
             </View>
-          </View>
 
-          {draft?.mode === 'style' ? (
-            <>
-              <VibeField value={vibe} onChange={setVibe} autoFocus={false} />
-              <Text style={styles.sheetNote}>
-                Nothing changes right away. The agent uses it the next time it works on how the app
-                looks, or ask it to restyle the app.
-              </Text>
-            </>
-          ) : (
-            <>
-              <TextInput
-                keyboardAppearance="dark"
-                value={name}
-                onChangeText={setName}
-                placeholder="Name, e.g. Habit tracker"
-                placeholderTextColor={colors.dust}
-                style={styles.input}
-                autoFocus={draft?.mode === 'create'}
-                onSubmitEditing={submit}
-                returnKeyType="done"
-                accessibilityLabel="App name"
-              />
+            {draft?.mode === 'style' ? (
+              <>
+                <VibeField value={vibe} onChange={setVibe} autoFocus={false} />
+                <Text style={styles.sheetNote}>
+                  Nothing changes right away. The agent uses it the next time it works on how the app
+                  looks, or ask it to restyle the app.
+                </Text>
+              </>
+            ) : (
+              <>
+                <TextInput
+                  keyboardAppearance="dark"
+                  value={name}
+                  onChangeText={setName}
+                  placeholder="Name, e.g. Habit tracker"
+                  placeholderTextColor={colors.dust}
+                  style={styles.input}
+                  autoFocus={draft?.mode === 'create'}
+                  onSubmitEditing={submit}
+                  returnKeyType="done"
+                  accessibilityLabel="App name"
+                />
 
-              {draft?.mode === 'create' ? <VibeField value={vibe} onChange={setVibe} /> : null}
+                {draft?.mode === 'create' ? <VibeField value={vibe} onChange={setVibe} /> : null}
 
-              <Text style={type.sectionLabel}>Colour</Text>
-              <View style={styles.swatches}>
-                {TINT_KEYS.map((k) => (
-                  <Pressable
-                    key={k}
-                    onPress={() => setTint(k)}
-                    style={[styles.swatch, { backgroundColor: TINTS[k].bg }, tint === k && styles.swatchOn]}
-                    accessibilityRole="radio"
-                    accessibilityState={{ selected: tint === k }}
-                    accessibilityLabel={k}
-                  >
-                    <View style={[styles.swatchDot, { backgroundColor: TINTS[k].fg }]} />
-                  </Pressable>
-                ))}
-              </View>
-
-              <Text style={type.sectionLabel}>Icon</Text>
-              <View style={styles.glyphs}>
-                {GLYPHS.map((g) => {
-                  const on = g === shownGlyph;
-                  return (
+                <Text style={type.sectionLabel}>Colour</Text>
+                <View style={styles.swatches}>
+                  {TINT_KEYS.map((k) => (
                     <Pressable
-                      key={g}
-                      onPress={() => setGlyph(g)}
-                      style={[styles.glyphBtn, on && styles.glyphBtnOn]}
+                      key={k}
+                      onPress={() => setTint(k)}
+                      style={[styles.swatch, { backgroundColor: TINTS[k].bg }, tint === k && styles.swatchOn]}
                       accessibilityRole="radio"
-                      accessibilityState={{ selected: on }}
-                      accessibilityLabel={g}
+                      accessibilityState={{ selected: tint === k }}
+                      accessibilityLabel={k}
                     >
-                      <Ionicons
-                        name={`${g}-outline`}
-                        size={20}
-                        color={on ? TINTS[tint].fg : colors.dust}
-                      />
+                      <View style={[styles.swatchDot, { backgroundColor: TINTS[k].fg }]} />
                     </Pressable>
-                  );
-                })}
-              </View>
-            </>
-          )}
+                  ))}
+                </View>
 
-          {stopsBuild && draft?.mode === 'create' ? (
-            <Text style={styles.sheetNote}>Creating an app stops the build that's running.</Text>
-          ) : null}
+                <Text style={type.sectionLabel}>Icon</Text>
+                <View style={styles.glyphs}>
+                  {GLYPHS.map((g) => {
+                    const on = g === shownGlyph;
+                    return (
+                      <Pressable
+                        key={g}
+                        onPress={() => setGlyph(g)}
+                        style={[styles.glyphBtn, on && styles.glyphBtnOn]}
+                        accessibilityRole="radio"
+                        accessibilityState={{ selected: on }}
+                        accessibilityLabel={g}
+                      >
+                        <Ionicons
+                          name={`${g}-outline`}
+                          size={20}
+                          color={on ? TINTS[tint].fg : colors.dust}
+                        />
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              </>
+            )}
+
+            {stopsBuild && draft?.mode === 'create' ? (
+              <Text style={styles.sheetNote}>Creating an app stops the build that's running.</Text>
+            ) : null}
+          </ScrollView>
 
           <View style={styles.dialogActions}>
             <Pressable
@@ -1081,6 +1097,7 @@ const styles = StyleSheet.create({
   sheetBackdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(10,10,12,0.72)' },
   sheetBackdropWide: { justifyContent: 'center', alignItems: 'center', padding: 24 },
   sheet: {
+    flexShrink: 1,
     gap: 14,
     paddingHorizontal: 20,
     paddingTop: 10,
@@ -1099,6 +1116,8 @@ const styles = StyleSheet.create({
     borderRadius: radii.sheet,
     borderBottomWidth: 1,
   },
+  sheetScroll: { flexGrow: 0 },
+  sheetBody: { gap: 14 },
   grabber: {
     alignSelf: 'center',
     width: 36,

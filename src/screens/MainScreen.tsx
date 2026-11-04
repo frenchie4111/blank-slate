@@ -697,7 +697,11 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
             onSuggest={runTurn}
           />
 
-          <View style={[styles.composerWrap, { paddingBottom: 10 + insets.bottom }]}>
+          {/* The home indicator sits under the keyboard, so drop its inset
+              while the keyboard is up. */}
+          <View
+            style={[styles.composerWrap, { paddingBottom: 10 + (keyboard.shown ? 0 : insets.bottom) }]}
+          >
             <View style={styles.composer}>
               <TextInput
                 keyboardAppearance="dark"
