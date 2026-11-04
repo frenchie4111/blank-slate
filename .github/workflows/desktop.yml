@@ -71,19 +71,7 @@ jobs:
           # Passed through the environment, not inline: a tag name is arbitrary
           # text and would otherwise reach the shell as syntax.
           TAG: ${{ github.ref_name }}
-        run: |
-          # Also checked here because a dispatch against a tag skips the
-          # trigger's pattern. Pre-release tags aren't supported: they would
-          # publish as full releases.
-          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::$TAG is not a release tag (vX.Y.Z)."
-            exit 1
-          fi
-          version=$(node -p "require('./app.json').expo.version")
-          if [ "$TAG" != "v$version" ]; then
-            echo "::error::Tag $TAG does not match expo.version $version in app.json."
-            exit 1
-          fi
+        run: scripts/check-release-tag.sh
       # The export runs from the repo root, so that's the tree to install.
       # `desktop/` plays no part in producing the renderer.
       - name: Install dependencies
