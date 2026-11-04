@@ -22,8 +22,8 @@ export const BLANK_SLATE_KEY_PREFIXES = [
   // Pre-projects VFS, migrated by store.ts into the first project.
   'vfs:',
   // API key (web only; SecureStore on iOS), legacy Anthropic key, model,
-  // auto app icons, badge position, v1 source history (storage/keyStore.ts,
-  // screens/DraggableBadge.tsx, storage/sourceStore.ts).
+  // auto app icons, the old badge position, v1 source history
+  // (storage/keyStore.ts, project/store.ts, storage/sourceStore.ts).
   'blank-slate.',
   // Model capability cache (agent/vision.ts).
   'agent:',

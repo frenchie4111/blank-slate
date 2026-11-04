@@ -76,6 +76,7 @@ Blank Slate records what the running app does: console output, errors with stack
 
 - The app's entry is \`App.tsx\`. It must \`export default\` a React component.
 - The app fills the screen. Make each screen's root a \`<Screen>\` from \`blank-slate/app\` (see "Design").
+- The app's home screen lives in a rounded viewport above Blank Slate's dock (\`useWindowDimensions\` and the safe-area insets describe that viewport). For immersive or full-screen experiences (games, camera, players), use a \`Modal\` (or equivalent) that covers the dock, with a clear close button.
 - Changes to any file trigger a recompile. If \`App.tsx\` or a transitive import fails to compile, the pane shows a build error — fix it and the pane recovers on the next write.
 
 ## Allowed modules
@@ -298,7 +299,7 @@ const DESKTOP_NOTES = `- Blank Slate is running as a desktop app, so this app ru
 
 const WEB_NOTES = `- Blank Slate is running in a web browser, so this app runs in a browser tab (the web build of React Native), not on a phone.
 - \`fetch\` is subject to browser CORS: APIs that don't send CORS headers will fail. Prefer APIs that allow browser calls.
-- Design at phone size (~430pt wide) but keep the layout sensible if the window is resized wider or taller.`;
+- Design at phone size (~430pt wide) but keep the layout sensible wider or taller: in a wide browser window the app gets a larger pane beside the chat (\`useWindowDimensions\`).`;
 
 const platformSection = (notes: string) => `
 ### Platform: desktop / web

@@ -78,6 +78,8 @@ const CURRENT_PROJECT_KEY = 'projects:current';
 const LEGACY_V2_VFS_INDEX = 'vfs:index';
 const LEGACY_V2_VFS_FILE_PREFIX = 'vfs:file:';
 const LEGACY_V1_HISTORY_KEY = 'blank-slate.source-history.v1';
+// Where the floating badge (replaced by the dock) was last dragged to.
+const LEGACY_BADGE_POSITION_KEY = 'blank-slate.badge-position';
 
 export const STARTER_APP = `import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
@@ -87,9 +89,8 @@ export default function App() {
     <View style={styles.wrap}>
       <Text style={styles.title}>Blank Slate</Text>
       <Text style={styles.body}>
-        Tap the floating badge to chat with the agent about what this app
-        should become. Hold it to see all your apps, or drag it anywhere if
-        it's in the way.
+        Tap the Blank Slate logo in the dock below to chat with the agent
+        about what this app should become. Your other apps sit beside it.
       </Text>
     </View>
   );
@@ -237,6 +238,7 @@ async function migrateLegacyV1(intoId: string): Promise<boolean> {
 export function init(): Promise<void> {
   if (initPromise) return initPromise;
   initPromise = (async () => {
+    AsyncStorage.removeItem(LEGACY_BADGE_POSITION_KEY).catch(() => {});
     const existing = await loadProjects();
     const storedCurrent = await AsyncStorage.getItem(CURRENT_PROJECT_KEY);
 

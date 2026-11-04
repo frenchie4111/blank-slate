@@ -1,10 +1,10 @@
 import { useWindowDimensions } from 'react-native';
 import { runtimePlatform } from '../platform/desktop';
 
-// At or above this width in the desktop shell, Blank Slate lays out like a
-// desktop app: chat in a sidebar, the generated app filling the rest. Below
-// it, the phone layout. A plain browser keeps the phone layout, matching the
-// web variant of the system prompt.
+// At or above this width on desktop or web, Blank Slate lays out like a
+// desktop app: the dock as a rail down the left, the generated app, and the
+// chat in a sidebar. Below it (and always on a phone), the phone layout with
+// the dock along the bottom.
 export const WIDE_MIN_WIDTH = 900;
 
 export const SIDEBAR_WIDTH = 400;
@@ -14,5 +14,5 @@ export const CONTENT_MAX_WIDTH = 720;
 
 export function useWideLayout(): boolean {
   const { width } = useWindowDimensions();
-  return runtimePlatform() === 'desktop' && width >= WIDE_MIN_WIDTH;
+  return runtimePlatform() !== 'native' && width >= WIDE_MIN_WIDTH;
 }

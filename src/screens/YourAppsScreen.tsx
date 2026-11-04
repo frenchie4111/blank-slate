@@ -38,18 +38,10 @@ import { useWideLayout } from '../theme/layout';
 type Props = {
   projects: Project[];
   currentId: string | null;
-  // An agent turn is running in the current project.
-  running: boolean;
-  // Stops that turn and resolves once it can no longer write files.
-  onStopBuild: () => Promise<void>;
   onSettings: () => void;
   // Switches to the project (if needed) and shows the running app, or its
   // chat with { chat: true }.
   onOpen: (id: string, opts?: { chat?: boolean }) => void;
-  // A freshly created project: switch to it and start chatting.
-  onCreated: (id: string) => void;
-  // Opens the project's chat with an icon request typed but not sent.
-  onChangeIcon: (id: string) => void;
   // A .blankslate file iOS opened Blank Slate with, waiting to be imported.
   incoming: PickedBundle | null;
   onIncomingHandled: () => void;
@@ -60,21 +52,58 @@ type Draft = { mode: 'create' } | { mode: 'edit'; project: Project } | { mode: '
 // Suggestions on the "How should it feel?" field. The first is the default.
 const VIBES = ['iOS native', 'Cozy', 'Bold', 'Minimal', 'Playful', 'Retro'];
 
-export function YourAppsScreen({
+type ActionsProps = {
+  projects: Project[];
+  currentId: string | null;
+  // An agent turn is running in the current project.
+  running: boolean;
+  // Stops that turn and resolves once it can no longer write files.
+  onStopBuild: () => Promise<void>;
+  // Switches to the project (if needed) and shows the running app, or its
+  // chat with { chat: true }.
+  onOpen: (id: string, opts?: { chat?: boolean }) => void;
+  // A freshly created project: switch to it and start chatting.
+  onCreated: (id: string) => void;
+  // Opens the project's chat with an icon request typed but not sent.
+  onChangeIcon: (id: string) => void;
+  children: React.ReactNode;
+};
+
+export type AppActions = {
+  // Opens the app, asking first if that would stop a running build.
+  open: (p: Project) => void;
+  // The long-press menu: Rename, Change icon, Share, Delete.
+  openMenu: (p: Project) => void;
+  create: () => void;
+  edit: (p: Project) => void;
+  remove: (p: Project) => void;
+  // A confirmation or delete is in progress.
+  busy: boolean;
+};
+
+const AppActionsContext = React.createContext<AppActions | null>(null);
+
+export function useAppActions(): AppActions {
+  const actions = React.useContext(AppActionsContext);
+  if (!actions) throw new Error('useAppActions outside AppActionsProvider');
+  return actions;
+}
+
+/**
+ * Opening, creating and managing apps, shared by Your apps and the dock: the
+ * tile menu, the new/edit sheet, and the delete and "Stop the current
+ * build?" confirmations. Its overlays render after `children`, on top.
+ */
+export function AppActionsProvider({
   projects,
   currentId,
   running,
   onStopBuild,
-  onSettings,
   onOpen,
   onCreated,
   onChangeIcon,
-  incoming,
-  onIncomingHandled,
-}: Props) {
-  const insets = useSafeAreaInsets();
-  const wide = useWideLayout();
-  const [editing, setEditing] = React.useState(false);
+  children,
+}: ActionsProps) {
   const [draft, setDraft] = React.useState<Draft | null>(null);
   const [pendingDelete, setPendingDelete] = React.useState<Project | null>(null);
   const [busy, setBusy] = React.useState(false);
@@ -83,8 +112,6 @@ export function YourAppsScreen({
   // Long-pressed tile: its context menu is open.
   const [menuFor, setMenuFor] = React.useState<Project | null>(null);
   const [sharing, setSharing] = React.useState<Project | null>(null);
-  const [importing, setImporting] = React.useState(false);
-  const [importError, setImportError] = React.useState<string | null>(null);
 
   const current = projects.find((p) => p.id === currentId) ?? null;
   const canDelete = projects.length > 1;
@@ -107,16 +134,15 @@ export function YourAppsScreen({
     action();
   };
 
-  const handleTile = (p: Project) => {
+  const open = (p: Project) => {
     if (busy) return;
-    if (editing) setDraft({ mode: 'edit', project: p });
     // An imported app's trust notice also mentions a build it would stop.
-    else if (p.id === currentId || projectStore.needsTrustNotice(p)) onOpen(p.id);
+    if (p.id === currentId || projectStore.needsTrustNotice(p)) onOpen(p.id);
     else afterStop(() => onOpen(p.id));
   };
 
   const openMenu = (p: Project) => {
-    if (busy || editing) return;
+    if (busy) return;
     if (Platform.OS !== 'web') {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
     }
@@ -135,58 +161,6 @@ export function YourAppsScreen({
     else afterStop(() => onChangeIcon(p.id));
   };
 
-  // Imports always land in a new project, which opens behind its trust notice.
-  const importingRef = React.useRef(false);
-  const runImport = React.useCallback(
-    async (get: () => Promise<PickedBundle | null>) => {
-      if (importingRef.current) return;
-      importingRef.current = true;
-      try {
-        const picked = await get();
-        if (!picked) return;
-        setImporting(true);
-        const { project, hasCode } = await importBundle(picked.bytes);
-        onOpen(project.id, { chat: !hasCode });
-      } catch (e) {
-        setImportError(
-          e instanceof BundleError || e instanceof ShareUnavailableError
-            ? e.message
-            : `Something went wrong reading that file. ${(e as Error)?.message ?? ''}`.trim(),
-        );
-      } finally {
-        importingRef.current = false;
-        setImporting(false);
-      }
-    },
-    [onOpen],
-  );
-
-  React.useEffect(() => {
-    if (!incoming) return;
-    onIncomingHandled();
-    runImport(async () => incoming);
-  }, [incoming, onIncomingHandled, runImport]);
-
-  // Web and desktop: drop a .blankslate file anywhere on Your apps.
-  React.useEffect(() => {
-    if (Platform.OS !== 'web' || typeof window === 'undefined') return;
-    const onDragOver = (e: DragEvent) => {
-      if (e.dataTransfer?.types.includes('Files')) e.preventDefault();
-    };
-    const onDrop = (e: DragEvent) => {
-      const file = e.dataTransfer?.files?.[0];
-      if (!file) return;
-      e.preventDefault();
-      runImport(() => readWebFile(file));
-    };
-    window.addEventListener('dragover', onDragOver);
-    window.addEventListener('drop', onDrop);
-    return () => {
-      window.removeEventListener('dragover', onDragOver);
-      window.removeEventListener('drop', onDrop);
-    };
-  }, [runImport]);
-
   const deletingCurrentBuild = running && pendingDelete?.id === currentId;
 
   const confirmDelete = async () => {
@@ -202,145 +176,18 @@ export function YourAppsScreen({
     }
   };
 
+  const actions: AppActions = {
+    open,
+    openMenu,
+    create: () => setDraft({ mode: 'create' }),
+    edit: (p) => setDraft({ mode: 'edit', project: p }),
+    remove: (p) => setPendingDelete(p),
+    busy,
+  };
+
   return (
-    <View style={[styles.root, { paddingTop: insets.top + 10 }]}>
-      <View style={styles.header}>
-        <View style={styles.headerText}>
-          <Text style={styles.title}>Your apps</Text>
-          <Text style={styles.count}>
-            {projects.length} app{projects.length === 1 ? '' : 's'} on this {runtimePlatform() === 'desktop' ? 'computer' : 'phone'}
-          </Text>
-        </View>
-        <Pressable
-          onPress={() => setEditing((v) => !v)}
-          style={({ pressed }) => [
-            styles.headerBtn,
-            editing && styles.headerBtnOn,
-            pressed && styles.pressed,
-          ]}
-          accessibilityRole="button"
-        >
-          <Text style={[styles.headerBtnText, editing && styles.headerBtnTextOn]}>
-            {editing ? 'Done' : 'Edit'}
-          </Text>
-        </Pressable>
-        <Pressable
-          onPress={() => runImport(pickBundle)}
-          disabled={importing}
-          style={({ pressed }) => [styles.iconBtn, (pressed || importing) && styles.pressed]}
-          accessibilityRole="button"
-          accessibilityLabel="Import app"
-        >
-          {importing ? (
-            <ActivityIndicator size="small" color={colors.dust} />
-          ) : (
-            <Ionicons name="download-outline" size={20} color={colors.dust} />
-          )}
-        </Pressable>
-        <Pressable
-          onPress={onSettings}
-          style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]}
-          accessibilityRole="button"
-          accessibilityLabel="Settings"
-        >
-          <Ionicons name="settings-outline" size={20} color={colors.dust} />
-        </Pressable>
-      </View>
-
-      <ScrollView contentContainerStyle={styles.grid}>
-        {projects.map((p) => {
-          const isCurrent = p.id === currentId;
-          return (
-            <View key={p.id} style={[styles.cell, wide && styles.cellWide]}>
-              <View style={editing && styles.tilted}>
-                <Pressable
-                  onPress={() => handleTile(p)}
-                  onLongPress={() => openMenu(p)}
-                  delayLongPress={400}
-                  // Right-click opens the same menu on web and desktop.
-                  {...(Platform.OS === 'web'
-                    ? ({
-                        onContextMenu: (e: { preventDefault: () => void }) => {
-                          e.preventDefault();
-                          openMenu(p);
-                        },
-                      } as object)
-                    : null)}
-                  style={({ pressed }) => [
-                    styles.tile,
-                    isCurrent ? styles.tileCurrent : null,
-                    pressed && styles.pressed,
-                  ]}
-                  accessibilityRole="button"
-                  accessibilityLabel={
-                    editing ? `Edit ${p.name}` : `Open ${p.name}${p.importedFrom ? ', imported' : ''}`
-                  }
-                >
-                  <AppIcon project={p} size={isCurrent ? 68 : 70} />
-                </Pressable>
-                {p.importedFrom && !editing ? (
-                  <View
-                    style={styles.importedBadge}
-                    accessibilityLabel="Imported"
-                    pointerEvents="none"
-                  >
-                    <Ionicons name="arrow-down" size={11} color={colors.chalk} />
-                  </View>
-                ) : null}
-                {editing && canDelete ? (
-                  <Pressable
-                    onPress={() => setPendingDelete(p)}
-                    style={styles.deleteBadge}
-                    hitSlop={8}
-                    accessibilityRole="button"
-                    accessibilityLabel={`Delete ${p.name}`}
-                  >
-                    <Ionicons name="close" size={13} color={colors.chalk} />
-                  </Pressable>
-                ) : null}
-              </View>
-              <Text style={styles.tileLabel} numberOfLines={1}>
-                {p.name}
-              </Text>
-              {isCurrent ? <View style={styles.currentDot} /> : null}
-            </View>
-          );
-        })}
-        <View style={[styles.cell, wide && styles.cellWide]}>
-          <Pressable
-            onPress={() => setDraft({ mode: 'create' })}
-            style={({ pressed }) => [styles.tile, styles.newTile, pressed && styles.pressed]}
-            accessibilityRole="button"
-            accessibilityLabel="New app"
-          >
-            <Ionicons name="add" size={30} color={colors.accent} />
-          </Pressable>
-          <Text style={[styles.tileLabel, styles.newLabel]}>New app</Text>
-        </View>
-      </ScrollView>
-
-      {current && !editing ? (
-        <View style={[styles.resumeWrap, { paddingBottom: Math.max(insets.bottom, 16) + 10 }]}>
-          <View style={[styles.resume, wide && styles.resumeWide]}>
-            <AppIcon project={current} size={44} />
-            <View style={styles.resumeText}>
-              <Text style={styles.resumeName} numberOfLines={1}>
-                {current.name}
-              </Text>
-              <Text style={styles.resumeMeta} numberOfLines={1}>
-                Open now · edited {timeAgo(current.updatedAt)}
-              </Text>
-            </View>
-            <Pressable
-              onPress={() => onOpen(current.id)}
-              style={({ pressed }) => [styles.resumeBtn, pressed && styles.pressed]}
-              accessibilityRole="button"
-            >
-              <Text style={styles.resumeBtnText}>Resume</Text>
-            </Pressable>
-          </View>
-        </View>
-      ) : null}
+    <AppActionsContext.Provider value={actions}>
+      {children}
 
       {menuFor ? (
         <TileMenu
@@ -352,28 +199,6 @@ export function YourAppsScreen({
       ) : null}
 
       <ShareSheet project={sharing} onClose={() => setSharing(null)} />
-
-      <Modal
-        transparent
-        visible={!!importError}
-        animationType="fade"
-        onRequestClose={() => setImportError(null)}
-      >
-        <View style={styles.backdrop}>
-          <View style={styles.dialog}>
-            <Text style={styles.dialogTitle}>Couldn't import app</Text>
-            <Text style={styles.dialogBody}>{importError}</Text>
-            <View style={styles.dialogActions}>
-              <Pressable
-                style={({ pressed }) => [styles.btn, styles.btnSecondary, pressed && styles.pressed]}
-                onPress={() => setImportError(null)}
-              >
-                <Text style={styles.btnSecondaryText}>OK</Text>
-              </Pressable>
-            </View>
-          </View>
-        </View>
-      </Modal>
 
       <AppSheet
         draft={draft}
@@ -467,6 +292,252 @@ export function YourAppsScreen({
           </View>
         </View>
       </Modal>
+    </AppActionsContext.Provider>
+  );
+}
+
+export function YourAppsScreen({
+  projects,
+  currentId,
+  onSettings,
+  onOpen,
+  incoming,
+  onIncomingHandled,
+}: Props) {
+  const insets = useSafeAreaInsets();
+  const wide = useWideLayout();
+  const actions = useAppActions();
+  const [editing, setEditing] = React.useState(false);
+  const [importing, setImporting] = React.useState(false);
+  const [importError, setImportError] = React.useState<string | null>(null);
+
+  const current = projects.find((p) => p.id === currentId) ?? null;
+  const canDelete = projects.length > 1;
+
+  const handleTile = (p: Project) => {
+    if (editing) actions.edit(p);
+    else actions.open(p);
+  };
+
+  const openMenu = (p: Project) => {
+    if (!editing) actions.openMenu(p);
+  };
+
+  // Imports always land in a new project, which opens behind its trust notice.
+  const importingRef = React.useRef(false);
+  const runImport = React.useCallback(
+    async (get: () => Promise<PickedBundle | null>) => {
+      if (importingRef.current) return;
+      importingRef.current = true;
+      try {
+        const picked = await get();
+        if (!picked) return;
+        setImporting(true);
+        const { project, hasCode } = await importBundle(picked.bytes);
+        onOpen(project.id, { chat: !hasCode });
+      } catch (e) {
+        setImportError(
+          e instanceof BundleError || e instanceof ShareUnavailableError
+            ? e.message
+            : `Something went wrong reading that file. ${(e as Error)?.message ?? ''}`.trim(),
+        );
+      } finally {
+        importingRef.current = false;
+        setImporting(false);
+      }
+    },
+    [onOpen],
+  );
+
+  React.useEffect(() => {
+    if (!incoming) return;
+    onIncomingHandled();
+    runImport(async () => incoming);
+  }, [incoming, onIncomingHandled, runImport]);
+
+  // Web and desktop: drop a .blankslate file anywhere on Your apps.
+  React.useEffect(() => {
+    if (Platform.OS !== 'web' || typeof window === 'undefined') return;
+    const onDragOver = (e: DragEvent) => {
+      if (e.dataTransfer?.types.includes('Files')) e.preventDefault();
+    };
+    const onDrop = (e: DragEvent) => {
+      const file = e.dataTransfer?.files?.[0];
+      if (!file) return;
+      e.preventDefault();
+      runImport(() => readWebFile(file));
+    };
+    window.addEventListener('dragover', onDragOver);
+    window.addEventListener('drop', onDrop);
+    return () => {
+      window.removeEventListener('dragover', onDragOver);
+      window.removeEventListener('drop', onDrop);
+    };
+  }, [runImport]);
+
+  return (
+    <View style={[styles.root, { paddingTop: insets.top + 10 }]}>
+      <View style={styles.header}>
+        <View style={styles.headerText}>
+          <Text style={styles.title}>Your apps</Text>
+          <Text style={styles.count}>
+            {projects.length} app{projects.length === 1 ? '' : 's'} on this {runtimePlatform() === 'desktop' ? 'computer' : 'phone'}
+          </Text>
+        </View>
+        <Pressable
+          onPress={() => setEditing((v) => !v)}
+          style={({ pressed }) => [
+            styles.headerBtn,
+            editing && styles.headerBtnOn,
+            pressed && styles.pressed,
+          ]}
+          accessibilityRole="button"
+        >
+          <Text style={[styles.headerBtnText, editing && styles.headerBtnTextOn]}>
+            {editing ? 'Done' : 'Edit'}
+          </Text>
+        </Pressable>
+        <Pressable
+          onPress={() => runImport(pickBundle)}
+          disabled={importing}
+          style={({ pressed }) => [styles.iconBtn, (pressed || importing) && styles.pressed]}
+          accessibilityRole="button"
+          accessibilityLabel="Import app"
+        >
+          {importing ? (
+            <ActivityIndicator size="small" color={colors.dust} />
+          ) : (
+            <Ionicons name="download-outline" size={20} color={colors.dust} />
+          )}
+        </Pressable>
+        <Pressable
+          onPress={onSettings}
+          style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]}
+          accessibilityRole="button"
+          accessibilityLabel="Settings"
+        >
+          <Ionicons name="settings-outline" size={20} color={colors.dust} />
+        </Pressable>
+      </View>
+
+      <ScrollView contentContainerStyle={styles.grid}>
+        {projects.map((p) => {
+          const isCurrent = p.id === currentId;
+          return (
+            <View key={p.id} style={[styles.cell, wide && styles.cellWide]}>
+              <View style={editing && styles.tilted}>
+                <Pressable
+                  onPress={() => handleTile(p)}
+                  onLongPress={() => openMenu(p)}
+                  delayLongPress={400}
+                  // Right-click opens the same menu on web and desktop.
+                  {...(Platform.OS === 'web'
+                    ? ({
+                        onContextMenu: (e: { preventDefault: () => void }) => {
+                          e.preventDefault();
+                          openMenu(p);
+                        },
+                      } as object)
+                    : null)}
+                  style={({ pressed }) => [
+                    styles.tile,
+                    isCurrent ? styles.tileCurrent : null,
+                    pressed && styles.pressed,
+                  ]}
+                  accessibilityRole="button"
+                  accessibilityLabel={
+                    editing ? `Edit ${p.name}` : `Open ${p.name}${p.importedFrom ? ', imported' : ''}`
+                  }
+                >
+                  <AppIcon project={p} size={isCurrent ? 68 : 70} />
+                </Pressable>
+                {p.importedFrom && !editing ? (
+                  <View
+                    style={styles.importedBadge}
+                    accessibilityLabel="Imported"
+                    pointerEvents="none"
+                  >
+                    <Ionicons name="arrow-down" size={11} color={colors.chalk} />
+                  </View>
+                ) : null}
+                {editing && canDelete ? (
+                  <Pressable
+                    onPress={() => actions.remove(p)}
+                    style={styles.deleteBadge}
+                    hitSlop={8}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Delete ${p.name}`}
+                  >
+                    <Ionicons name="close" size={13} color={colors.chalk} />
+                  </Pressable>
+                ) : null}
+              </View>
+              <Text style={styles.tileLabel} numberOfLines={1}>
+                {p.name}
+              </Text>
+              {isCurrent ? <View style={styles.currentDot} /> : null}
+            </View>
+          );
+        })}
+        <View style={[styles.cell, wide && styles.cellWide]}>
+          <Pressable
+            onPress={actions.create}
+            style={({ pressed }) => [styles.tile, styles.newTile, pressed && styles.pressed]}
+            accessibilityRole="button"
+            accessibilityLabel="New app"
+          >
+            <Ionicons name="add" size={30} color={colors.accent} />
+          </Pressable>
+          <Text style={[styles.tileLabel, styles.newLabel]}>New app</Text>
+        </View>
+      </ScrollView>
+
+      {current && !editing ? (
+        <View style={[styles.resumeWrap, { paddingBottom: Math.max(insets.bottom, 16) + 10 }]}>
+          <View style={[styles.resume, wide && styles.resumeWide]}>
+            <AppIcon project={current} size={44} />
+            <View style={styles.resumeText}>
+              <Text style={styles.resumeName} numberOfLines={1}>
+                {current.name}
+              </Text>
+              <Text style={styles.resumeMeta} numberOfLines={1}>
+                Open now · edited {timeAgo(current.updatedAt)}
+              </Text>
+            </View>
+            <Pressable
+              onPress={() => onOpen(current.id)}
+              style={({ pressed }) => [styles.resumeBtn, pressed && styles.pressed]}
+              accessibilityRole="button"
+            >
+              <Text style={styles.resumeBtnText}>Resume</Text>
+            </Pressable>
+          </View>
+        </View>
+      ) : null}
+
+
+      <Modal
+        transparent
+        visible={!!importError}
+        animationType="fade"
+        onRequestClose={() => setImportError(null)}
+      >
+        <View style={styles.backdrop}>
+          <View style={styles.dialog}>
+            <Text style={styles.dialogTitle}>Couldn't import app</Text>
+            <Text style={styles.dialogBody}>{importError}</Text>
+            <View style={styles.dialogActions}>
+              <Pressable
+                style={({ pressed }) => [styles.btn, styles.btnSecondary, pressed && styles.pressed]}
+                onPress={() => setImportError(null)}
+              >
+                <Text style={styles.btnSecondaryText}>OK</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
     </View>
   );
 }

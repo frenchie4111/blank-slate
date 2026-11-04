@@ -3,6 +3,8 @@ import { StatusBar } from 'expo-status-bar';
 import React from 'react';
 import {
   ActivityIndicator,
+  Animated,
+  Easing,
   KeyboardAvoidingView,
   Linking,
   Platform,
@@ -15,6 +17,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { runAgentTurn, type AgentEvent, type AgentRun } from '../agent/agent';
 import type { ChatMessage } from '../agent/openrouter';
+import { AppViewport } from '../dynamic/AppViewport';
 import { DynamicView, type RenderError } from '../dynamic/DynamicView';
 import { clearCompileCache } from '../dynamic/resolver';
 import { AppIcon } from '../components/AppIcon';
@@ -37,21 +40,26 @@ import { ShareSheet } from '../share/ShareSheet';
 import { getAutoAppIcons, getModel } from '../storage/keyStore';
 import { colors, fonts, radii, space } from '../theme';
 import { SIDEBAR_WIDTH, useWideLayout } from '../theme/layout';
-import { LogoMark } from '../theme/LogoMark';
 import * as vfs from '../vfs/vfs';
 import { ChatList, newChatScrollMemory, type ChatScrollMemory } from './ChatList';
 import type { PendingCall } from './ToolGroup';
-import { DraggableBadge } from './DraggableBadge';
+import { Dock, DOCK_BAR_HEIGHT } from './Dock';
 import { FilesPanel } from './FileViewer';
 import { HistoryPanel } from './HistoryPanel';
 import { SettingsScreen } from './SettingsScreen';
-import { YourAppsScreen } from './YourAppsScreen';
+import { useKeyboardShown } from './useKeyboardShown';
+import { AppActionsProvider, YourAppsScreen } from './YourAppsScreen';
 
 type Props = { apiKey: string; onResetKey: () => void };
 
 // chat: open the chat rather than the preview. draft: text to leave in the
 // composer, unsent.
 type EnterOpts = { chat?: boolean; draft?: string };
+
+// The app is full bleed, raised over the dock: its corners on the dock's
+// side are rounded (close to an iPhone's own display corners) and it casts a
+// shadow onto the dock.
+const VIEWPORT_RADIUS = 24;
 
 export function MainScreen({ apiKey, onResetKey }: Props) {
   const insets = useSafeAreaInsets();
@@ -97,6 +105,23 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
   const chatScrollRef = React.useRef<ChatScrollMemory>(newChatScrollMemory());
   const activeProjectRef = React.useRef<string | null>(null);
   const renderErrorRef = React.useRef<RenderError | null>(null);
+  const viewportRef = React.useRef<React.ComponentRef<typeof Animated.View> | null>(null);
+
+  // The bottom dock steps aside while the keyboard is up, so the app gets
+  // the full height. The viewport resizes once at the start of each move
+  // (not every frame, which would relayout the app throughout); the keyboard
+  // covers the dock as it slides.
+  const keyboard = useKeyboardShown(!wide, viewportRef);
+  const dockHidden = !wide && keyboard.shown;
+  const dockSlide = React.useRef(new Animated.Value(0)).current;
+  React.useEffect(() => {
+    Animated.timing(dockSlide, {
+      toValue: dockHidden ? 1 : 0,
+      duration: keyboard.duration,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: Platform.OS !== 'web',
+    }).start();
+  }, [dockHidden, keyboard.duration, dockSlide]);
 
   const refreshProjects = React.useCallback(async () => {
     const [list, snapshot] = await Promise.all([
@@ -491,6 +516,12 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
 
   const openApps = () => setAppsOpen(true);
 
+  const openChat = () => {
+    setActiveTab('chat');
+    if (wide) setSidebarOpen(true);
+    else setChatVisible(true);
+  };
+
   const showApp = () => {
     setAppOpened(true);
     setChatVisible(false);
@@ -704,33 +735,64 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
     </>
   );
 
+  const dockHeight = DOCK_BAR_HEIGHT + insets.bottom;
+  const viewportInsets = wide
+    ? { top: 0, right: 0, bottom: 0, left: 0 }
+    : { top: insets.top, right: insets.right, bottom: 0, left: insets.left };
+
   return (
     <View style={[styles.root, wide && styles.rootWide]}>
-      {wide && sidebarOpen ? <View style={styles.sidebar}>{chatPanel}</View> : null}
+      <AppActionsProvider
+        projects={projects}
+        currentId={currentId}
+        running={running}
+        onStopBuild={stopAndWait}
+        onOpen={(id, opts) => enterApp(id, opts)}
+        onCreated={(id) => enterApp(id, { chat: true })}
+        onChangeIcon={(id) => enterApp(id, { chat: true, draft: 'Make a new app icon for this app' })}
+      >
+      {wide ? <Dock vertical projects={projects} currentId={currentId} onLogo={openChat} /> : null}
 
-      <View style={styles.appLayer}>
-        {canRun ? (
-          <DynamicView
-            revision={renderRevision}
-            onError={handleRenderError}
-            onClear={handleRenderClear}
-            onFix={fixRenderErrorNow}
-            covered={(!wide && chatVisible) || appsOpen || settingsVisible}
-          />
-        ) : null}
+      {wide ? null : (
+        <Animated.View
+          style={[
+            styles.dock,
+            { height: dockHeight, paddingBottom: insets.bottom },
+            { transform: [{ translateY: Animated.multiply(dockSlide, dockHeight) }] },
+          ]}
+          pointerEvents={dockHidden ? 'none' : 'auto'}
+          accessibilityElementsHidden={dockHidden}
+          importantForAccessibility={dockHidden ? 'no-hide-descendants' : 'auto'}
+        >
+          <Dock projects={projects} currentId={currentId} onLogo={openChat} />
+        </Animated.View>
+      )}
+
+      <View
+        style={
+          wide
+            ? [styles.raised, styles.raisedWide]
+            : [styles.raised, styles.raisedPhone, { bottom: dockHidden ? 0 : dockHeight }]
+        }
+      >
+        <AppViewport
+          ref={viewportRef}
+          insets={viewportInsets}
+          style={[styles.viewport, wide ? styles.viewportWide : styles.viewportPhone]}
+        >
+          {canRun ? (
+            <DynamicView
+              revision={renderRevision}
+              onError={handleRenderError}
+              onClear={handleRenderClear}
+              onFix={fixRenderErrorNow}
+              covered={(!wide && chatVisible) || appsOpen || settingsVisible}
+            />
+          ) : null}
+        </AppViewport>
       </View>
 
-      {(wide ? sidebarOpen : chatVisible) || appsOpen ? null : (
-        <DraggableBadge
-          size={56}
-          style={styles.floatingBadge}
-          onPress={() => (wide ? setSidebarOpen(true) : setChatVisible(true))}
-          onLongPress={openApps}
-          accessibilityLabel="Open Blank Slate chat"
-        >
-          <LogoMark size={24} />
-        </DraggableBadge>
-      )}
+      {wide && sidebarOpen ? <View style={styles.sidebar}>{chatPanel}</View> : null}
 
       {wide ? null : chatVisible ? (
         <View style={styles.chatOverlay}>
@@ -750,12 +812,8 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
           <YourAppsScreen
             projects={projects}
             currentId={currentId}
-            running={running}
-            onStopBuild={stopAndWait}
             onSettings={() => setSettingsVisible(true)}
             onOpen={(id, opts) => enterApp(id, opts)}
-            onCreated={(id) => enterApp(id, { chat: true })}
-            onChangeIcon={(id) => enterApp(id, { chat: true, draft: 'Make a new app icon for this app' })}
             incoming={incoming}
             onIncomingHandled={clearIncoming}
           />
@@ -786,6 +844,7 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
           />
         </View>
       ) : null}
+      </AppActionsProvider>
     </View>
   );
 }
@@ -1032,28 +1091,39 @@ function HostStatusBar() {
   return <StatusBar style="light" />;
 }
 
+function radiusBottom(r: number) {
+  return { borderBottomLeftRadius: r, borderBottomRightRadius: r };
+}
+
+function radiusLeft(r: number) {
+  return { borderTopLeftRadius: r, borderBottomLeftRadius: r };
+}
+
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.slate, ...clipOnWeb },
   loading: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.slate },
   rootWide: { flexDirection: 'row' },
-  sidebar: {
-    width: SIDEBAR_WIDTH,
-    borderRightWidth: 1,
-    borderRightColor: colors.line,
-    backgroundColor: colors.slate,
+  sidebar: { width: SIDEBAR_WIDTH, backgroundColor: colors.slate },
+  // Carries the shadow; iOS clips a shadow on a view that clips its content,
+  // so the clipping happens one level down.
+  raised: {},
+  raisedPhone: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    ...radiusBottom(VIEWPORT_RADIUS),
+    boxShadow: '0 2px 10px rgba(0, 0, 0, 0.3)',
   },
-  appLayer: { flex: 1, ...clipOnWeb },
+  // Lighter beside the rail, where a shadow runs the window's full height.
+  raisedWide: { flex: 1, ...radiusLeft(VIEWPORT_RADIUS), boxShadow: '0 0 6px rgba(0, 0, 0, 0.2)' },
+  // The app's pane. Clipped, so the app's content (but not its Modals, which
+  // cover the window) stays inside.
+  viewport: { flex: 1, overflow: 'hidden', backgroundColor: colors.slate, ...clipOnWeb },
+  viewportPhone: radiusBottom(VIEWPORT_RADIUS),
+  viewportWide: radiusLeft(VIEWPORT_RADIUS),
+  dock: { position: 'absolute', left: 0, right: 0, bottom: 0, backgroundColor: colors.slate },
   pressed: { opacity: 0.7 },
-  floatingBadge: {
-    // Position and size come from DraggableBadge.
-    backgroundColor: colors.board,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: colors.lineStrong,
-    alignItems: 'center',
-    justifyContent: 'center',
-    boxShadow: '0 8px 24px rgba(0, 0, 0, 0.45)',
-  },
   chatOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: colors.slate },
   fullOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: colors.slate },
 

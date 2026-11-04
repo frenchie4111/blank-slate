@@ -1,5 +1,13 @@
 import * as React from 'react';
 import * as ReactNative from 'react-native';
+import { SafeAreaFrameContext, SafeAreaInsetsContext } from 'react-native-safe-area-context';
+import {
+  appDimensions,
+  FullWindowContext,
+  HostInsetsContext,
+  realInsetsFallback,
+  useAppWindowDimensions,
+} from '../dynamic/viewport';
 import * as history from './history';
 import { systemHex } from '../appkit/system';
 import { layoutProblems, lintedCreate, noteMissingIcon, styleProblems } from './lint';
@@ -410,6 +418,7 @@ type UiNode = {
 
 async function snapshotUi(): Promise<{ root: Frame | null; nodes: UiNode[] }> {
   const root = await appFrame();
+  const win = ReactNative.Dimensions.get('window');
   const entries = [...registry.values()];
   const frames = await Promise.all(entries.map((e) => measure(e.node)));
   const nodes: UiNode[] = [];
@@ -417,7 +426,15 @@ async function snapshotUi(): Promise<{ root: Frame | null; nodes: UiNode[] }> {
     const f = frames[i];
     if (!f) return;
     const frame = root ? { ...f, x: f.x - root.x, y: f.y - root.y } : f;
-    if (root && (frame.x + frame.w <= 0 || frame.y + frame.h <= 0 || frame.x >= root.w || frame.y >= root.h)) return;
+    // An open Modal covers the whole window, dock included, so its controls
+    // can sit outside the app view and still be on screen.
+    if (root) {
+      const b =
+        openModals > 0
+          ? { left: -root.x, top: -root.y, right: win.width - root.x, bottom: win.height - root.y }
+          : { left: 0, top: 0, right: root.w, bottom: root.h };
+      if (frame.x + frame.w <= b.left || frame.y + frame.h <= b.top || frame.x >= b.right || frame.y >= b.bottom) return;
+    }
     const p = e.props.current ?? {};
     const kind = KIND[e.name] ?? 'view';
     let extra = '';
@@ -685,6 +702,10 @@ export function instrumentedReactNative(): Record<string, unknown> {
     StyleSheet: Object.freeze({ ...RN.StyleSheet, create: lintedCreate(RN.StyleSheet.create) }),
     Alert: instrumentedAlert(RN.Alert),
     ActionSheetIOS: instrumentedActionSheet(RN.ActionSheetIOS),
+    // The app's window is its viewport; a Modal gets the real one back.
+    useWindowDimensions: useAppWindowDimensions,
+    Dimensions: appDimensions,
+    Modal: appModal(RN.Modal),
   };
   const out: Record<string, unknown> = {};
   // Getters, so RN's lazy (and deprecated) exports aren't evaluated up front.
@@ -695,6 +716,38 @@ export function instrumentedReactNative(): Record<string, unknown> {
   Object.assign(out, wrapped);
   instrumentedRN = out;
   return out;
+}
+
+// A Modal covers the whole window, dock included, so inside it the app sees
+// the window's real size and safe area rather than the viewport's.
+let openModals = 0;
+
+function appModal(Base: React.ComponentType<any>) {
+  const AppModal = React.forwardRef<unknown, Record<string, unknown>>(function Modal(props, ref) {
+    const visible = props.visible !== false;
+    React.useEffect(() => {
+      if (!visible) return;
+      openModals++;
+      return () => {
+        openModals--;
+      };
+    }, [visible]);
+    const host = React.useContext(HostInsetsContext) ?? realInsetsFallback();
+    const { width, height } = ReactNative.useWindowDimensions();
+    const frame = React.useMemo(() => ({ x: 0, y: 0, width, height }), [width, height]);
+    const children = React.createElement(
+      FullWindowContext.Provider,
+      { value: true },
+      React.createElement(
+        SafeAreaInsetsContext.Provider,
+        { value: host },
+        React.createElement(SafeAreaFrameContext.Provider, { value: frame }, props.children as React.ReactNode),
+      ),
+    );
+    return React.createElement(Base, { ...props, ref }, children);
+  });
+  AppModal.displayName = 'Modal';
+  return AppModal;
 }
 
 // ---- expo-sensors ------------------------------------------------------------------
