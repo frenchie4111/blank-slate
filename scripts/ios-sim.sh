@@ -12,7 +12,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-BUNDLE_ID=org.mikelyons.blank-slate
+BUNDLE_ID=$(node -p 'require("./app.json").expo.ios.bundleIdentifier')
 METRO_PORT=8081
 
 udid=${1:-}
