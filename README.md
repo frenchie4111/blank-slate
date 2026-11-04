@@ -117,6 +117,60 @@ real globals, other apps' storage and possibly the OpenRouter key
 ([`globals.ts`](src/sandbox/globals.ts) spells out what it does and doesn't
 cover). Only import `.blankslate` files from people you trust.
 
+## Releasing
+
+CI does the release. Locally:
+
+1. Bump `expo.version` in `app.json` and commit.
+2. Tag the commit `vX.Y.Z`, matching that version, and push the tag:
+   `git tag vX.Y.Z && git push origin vX.Y.Z`. For hand-written release
+   notes, use an annotated tag (`git tag -a vX.Y.Z -F notes.md`). Otherwise
+   GitHub generates the notes.
+
+The tag starts two workflows:
+
+- [`desktop.yml`](.github/workflows/desktop.yml) builds the macOS (arm64 and
+  x64, signed and notarized, DMG and zip) and Windows (x64 NSIS, unsigned)
+  installers. It uploads them to a **draft** GitHub Release for the tag. Once
+  both platforms are in, it adds `SHA256SUMS.txt` and publishes the release.
+  Installed desktop apps update from the published release
+  ([`desktop/README.md`](desktop/README.md#auto-update)).
+- [`app.yml`](.github/workflows/app.yml) typechecks, then publishes an EAS
+  update to the `production` branch. `runtimeVersion` follows the app version,
+  so an update for a new `expo.version` only reaches native builds of that
+  version. A version bump needs `eas build --profile production` as well.
+
+Both workflows fail early if the tag doesn't match `expo.version`. Every push
+to `main` publishes an EAS update to `preview`. Every push that touches the
+app runs the typecheck and a web export.
+
+**Retrying a partial release.** Nothing is public until every platform has
+uploaded, so a failed run leaves a draft behind. Fix the cause, then either
+re-run the failed jobs on the original run, or dispatch the workflow against
+the tag: Actions → Test & Release desktop → Run workflow → *Use workflow
+from* `vX.Y.Z`, or `gh workflow run desktop.yml --ref vX.Y.Z`. The retry
+uploads into the same draft and replaces any assets already there. The same
+works for `app.yml` if the production update failed. Dispatched against a
+branch, the desktop workflow only checks the web export.
+
+**Smoke-testing signing.** `desktop-mac-smoke.yml` runs the macOS half of a
+release, including notarization, with `--publish never`. It then checks the
+app and DMG with `codesign`, `spctl` and `stapler`, and uploads the arm64 DMG
+as an artifact. Run it from Actions → *Smoke test the macOS signing chain* on
+any branch, picking a runner image, before cutting a release that changes
+signing, the certificate or electron-builder.
+
+**Repository secrets** (`GITHUB_TOKEN` is provided automatically):
+
+| Secret | What |
+| --- | --- |
+| `APPLE_ID` | Apple ID used for notarization |
+| `APPLE_APP_SPECIFIC_PASSWORD` | App-specific password for that Apple ID (appleid.apple.com) |
+| `APPLE_TEAM_ID` | `M7Y6TPCQ63` |
+| `MAC_CSC_LINK` | Base64 `.p12` of the "Developer ID Application: Michael Lyons (M7Y6TPCQ63)" certificate |
+| `MAC_CSC_KEY_PASSWORD` | Password for that `.p12` |
+| `EXPO_TOKEN` | Expo access token for the `mikepersonal` account |
+
 ## Status
 
 A personal, experimental project. Expect rough edges and breaking changes.
