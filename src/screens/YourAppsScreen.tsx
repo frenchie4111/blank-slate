@@ -14,6 +14,7 @@ import {
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { StoreAppIcon } from '../appstore/AppStoreScreen';
 import { AppIcon } from '../components/AppIcon';
 import * as debugHistory from '../debug/history';
 import {
@@ -40,6 +41,8 @@ type Props = {
   projects: Project[];
   currentId: string | null;
   onSettings: () => void;
+  // Opens the App Store, which sits on the grid like an app.
+  onStore: () => void;
   // Switches to the project (if needed) and shows the running app, or its
   // chat with { chat: true }.
   onOpen: (id: string, opts?: { chat?: boolean }) => void;
@@ -301,6 +304,7 @@ export function YourAppsScreen({
   projects,
   currentId,
   onSettings,
+  onStore,
   onOpen,
   incoming,
   onIncomingHandled,
@@ -422,6 +426,20 @@ export function YourAppsScreen({
       </View>
 
       <ScrollView contentContainerStyle={styles.grid}>
+        <View style={[styles.cell, wide && styles.cellWide]}>
+          <Pressable
+            onPress={onStore}
+            disabled={editing}
+            style={({ pressed }) => [styles.tile, (pressed || editing) && styles.pressed]}
+            accessibilityRole="button"
+            accessibilityLabel="App Store"
+          >
+            <StoreAppIcon size={70} />
+          </Pressable>
+          <Text style={styles.tileLabel} numberOfLines={1}>
+            App Store
+          </Text>
+        </View>
         {projects.map((p) => {
           const isCurrent = p.id === currentId;
           return (

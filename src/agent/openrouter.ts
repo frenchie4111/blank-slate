@@ -420,6 +420,41 @@ export async function describeImage(
   return { text, cost: parsed.usage?.cost ?? null, usage: parsed.usage ?? null };
 }
 
+// One-shot, non-streamed completion that should come back as a JSON object
+// (the App Store's listings). Returns the raw text; the caller parses it.
+export async function completeJson(
+  apiKey: string,
+  model: string,
+  system: string,
+  prompt: string,
+  signal?: AbortSignal,
+): Promise<{ text: string; cost: number | null }> {
+  const res = await expoFetch(ENDPOINT, {
+    method: 'POST',
+    headers: headersFor(apiKey),
+    body: JSON.stringify({
+      model,
+      max_tokens: 12000,
+      reasoning: { effort: 'low', exclude: true },
+      response_format: { type: 'json_object' },
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: prompt },
+      ],
+    }),
+    signal,
+  });
+  const raw = await res.text();
+  if (!res.ok) throw new Error(`OpenRouter ${res.status}: ${describeErrorBody(raw)}`);
+  const parsed = JSON.parse(raw) as {
+    choices?: { message?: { content?: string | null } }[];
+    usage?: Usage;
+  };
+  const text = parsed.choices?.[0]?.message?.content?.trim();
+  if (!text) throw new Error('The model returned nothing.');
+  return { text, cost: parsed.usage?.cost ?? null };
+}
+
 /** input_modalities for a model, e.g. ['text', 'image']. */
 export async function fetchInputModalities(apiKey: string, model: string): Promise<string[] | null> {
   // The per-model endpoints route is a few KB; /models is several hundred.

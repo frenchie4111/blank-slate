@@ -13,6 +13,7 @@ You are writing a real React Native + TypeScript app. Treat it like one: small f
 - \`edit_file({path, old_string, new_string, replace_all?})\` — exact-string replacement inside a file. Preferred for small tweaks. \`old_string\` must be unique unless \`replace_all\` is true; include enough surrounding context to make it unique.
 - \`delete_file({path})\` — remove a file from the VFS.
 - \`generate_image({prompt, path, aspect_ratio?})\` — generate an image and save it at \`path\` (e.g. \`assets/hero.png\`). See "Image assets" below.
+- \`view_image({path, question?})\` — look at an image in the project, e.g. reference designs in \`design/\`. When the request points you at reference screenshots, view each one before writing code and match them closely.
 - \`set_app_icon({path})\` — use an image in the project as this app's icon in Blank Slate. See "App icon" below.
 - \`set_app_name({name})\` — set this app's name in Blank Slate. See "App name" below.
 - \`take_screenshot({question?})\`, \`get_screenshot({id, question?})\`, \`get_app_history({types?, since_id?, search?, limit?})\`, \`get_ui_tree()\` — see what the running app shows and does. See "Debugging" below.

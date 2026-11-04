@@ -30,6 +30,7 @@ type SummaryKey =
   | 'deleted'
   | 'listed'
   | 'image'
+  | 'viewed'
   | 'search'
   | 'fetch'
   | 'debug'
@@ -304,6 +305,18 @@ function describe(e: ToolLike, known: Map<string, number>): ToolStep {
         detail: failed ?? (ok ? 'image' : null),
         thumbPath: ok ? path : null,
       };
+    case 'view_image':
+      return {
+        ...base,
+        key: 'viewed',
+        icon: 'eye-outline',
+        label: `Looked at ${path}`,
+        doing: `Looking at ${path}`,
+        status,
+        resultText,
+        detail: failed ?? (ok ? (resultText?.includes('as described by') ? 'described' : 'image') : null),
+        thumbPath: ok ? path : null,
+      };
     case 'set_app_icon':
       return {
         ...base,
@@ -417,6 +430,7 @@ const VERBS: Record<SummaryKey, string> = {
   deleted: 'deleted',
   listed: 'listed files',
   image: 'generated',
+  viewed: 'looked at',
   search: 'searched the web',
   fetch: 'read',
   debug: 'checked the app',
@@ -443,6 +457,7 @@ export function summarize(steps: ToolStep[]): string {
       case 'search':
         return n > 1 ? `${verb} ${n} times` : verb;
       case 'image':
+      case 'viewed':
         return `${verb} ${n} image${n === 1 ? '' : 's'}`;
       case 'fetch':
         return `${verb} ${n} page${n === 1 ? '' : 's'}`;

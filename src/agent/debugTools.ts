@@ -66,7 +66,8 @@ export const DEBUG_TOOL_NAMES = new Set(DEBUG_FUNCTION_TOOLS.map((t) => t.name))
 
 // The agent loop swaps the first for the second once the image is dropped.
 export const IMAGE_ATTACHED = 'The image is attached in the next message.';
-export const IMAGE_DROPPED = 'The image was shown then and is no longer attached; get_screenshot fetches it again.';
+export const IMAGE_DROPPED =
+  'The image was shown then and is no longer attached; get_screenshot or view_image fetches it again.';
 
 export type DebugToolResult = {
   ok: boolean;
