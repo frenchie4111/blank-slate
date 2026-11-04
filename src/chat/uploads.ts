@@ -3,7 +3,7 @@ import type { ContentPart } from '../agent/openrouter';
 import { fs } from '../debug/nativeModules';
 import type { EntryAttachment } from '../project/chatStore';
 import { TEXT_EXTS } from '../share/bundle';
-import { IMAGE_EXTS, readFile, writeFile } from '../vfs/vfs';
+import { deleteFile, IMAGE_EXTS, readFile, writeFile } from '../vfs/vfs';
 
 // Files the user attaches to a chat message. Each one is saved into the app's
 // files under uploads/ (so the agent can use it from code) and sent with the
@@ -304,7 +304,11 @@ function image(name: string, dataUrl: string, width?: number, height?: number): 
 // ---------------------------------------------------------------------------
 // Sending.
 
-/** Writes each attachment into the current app's uploads/, never overwriting. */
+/**
+ * Writes each attachment into the current app's uploads/, never overwriting.
+ * All or nothing: if one fails, the ones already written are deleted, so a
+ * retry doesn't leave -2 copies behind in storage that's already full.
+ */
 export async function saveAttachments(list: Attachment[]): Promise<SavedAttachment[]> {
   const saved: SavedAttachment[] = [];
   const taken = new Set<string>();
@@ -319,6 +323,9 @@ export async function saveAttachments(list: Attachment[]): Promise<SavedAttachme
     try {
       await writeFile(path, a.content);
     } catch {
+      // writeFile may have indexed the path before the write itself failed.
+      // One at a time: each delete rewrites the file index.
+      for (const p of [...saved.map((s) => s.path), path]) await deleteFile(p).catch(() => {});
       throw new Error(
         WEB
           ? `Couldn't save ${a.name}: the browser's storage for Blank Slate is full. Delete some files or apps and try again.`
@@ -354,11 +361,9 @@ export function composeRequest(
   for (const a of saved) {
     if (a.kind === 'image') {
       const size = a.width && a.height ? `, ${a.width}×${a.height}` : '';
-      lines.push(
-        seesImages
-          ? `- ${a.path} (image${size}): attached below for this message only. Call view_image on it to look again later.`
-          : `- ${a.path} (image${size}): call view_image on it to see it.`,
-      );
+      // Saved history keeps this line but not the image, and Retry,
+      // Continue and later turns replay it, so it must read true either way.
+      lines.push(`- ${a.path} (image${size}): call view_image on it if it isn't attached to this message.`);
       if (seesImages) {
         images.push({ type: 'text', text: `${a.path}:` });
         images.push({ type: 'image_url', image_url: { url: a.content } });

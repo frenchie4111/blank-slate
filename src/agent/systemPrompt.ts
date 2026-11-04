@@ -45,6 +45,7 @@ import rows from './uploads/sales.csv';    // .csv .txt .md .svg .html .xml .yml
 import config from './uploads/config.json'; // .json: the parsed value
 \`\`\`
 
+- This works for any data file in the project, not just uploads: you can write your own \`data/questions.json\` or \`content/about.md\` and import it the same way.
 - Parse CSV yourself (split lines, handle quoted fields); there's no CSV library.
 - Import data files rather than pasting their contents into code. Don't \`read_file\` a large upload just to copy it.
 - Don't overwrite or delete uploads unless the user asks. If they attach an image they want as the app icon, call \`set_app_icon\` with its path.

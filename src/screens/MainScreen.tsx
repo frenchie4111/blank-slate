@@ -461,13 +461,14 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
   const send = async () => {
     const text = input.trim();
     if ((!text && !attachments.length) || running || attaching) return;
+    const sending = attachments;
     let files: SavedAttachment[] = [];
-    if (attachments.length) {
+    if (sending.length) {
       // Saved first, so a failure (web storage full) keeps the message and
       // its attachments in the composer.
       setAttaching(true);
       try {
-        files = await saveAttachments(attachments);
+        files = await saveAttachments(sending);
       } catch (e) {
         setAttachError((e as Error).message);
         return;
@@ -476,7 +477,11 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
       }
     }
     setInput('');
-    setAttachments([]);
+    // Anything dropped or pasted while saving stays for the next message.
+    const sent = new Set(sending.map((a) => a.id));
+    const left = attachmentsRef.current.filter((a) => !sent.has(a.id));
+    attachmentsRef.current = left;
+    setAttachments(left);
     setAttachError(null);
     await runTurn(text, files);
   };
@@ -530,36 +535,45 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
     }
   };
 
-  // Web and desktop: drop files onto the chat, or paste an image, while the
-  // composer is showing. Your apps has its own drop target for .blankslate
-  // files and isn't covered by this.
-  const composerShowing = !appsOpen && activeTab === 'chat' && (wide ? sidebarOpen : chatVisible);
+  // Web and desktop: drop files onto the chat, or paste an image into it.
+  // Only the chat tab's own node listens, so drops and pastes aimed at the
+  // app preview (or Your apps' .blankslate import) are left alone.
+  const [chatDropNode, setChatDropNode] = React.useState<HTMLElement | null>(null);
+  const chatDropRef = React.useCallback((node: View | null) => {
+    if (Platform.OS === 'web') setChatDropNode(node as unknown as HTMLElement | null);
+  }, []);
   React.useEffect(() => {
-    if (Platform.OS !== 'web' || typeof window === 'undefined' || !composerShowing) return;
+    const node = chatDropNode;
+    if (!node) return;
     const onDragOver = (e: DragEvent) => {
       if (e.dataTransfer?.types.includes('Files')) e.preventDefault();
     };
     const onDrop = (e: DragEvent) => {
+      if (e.defaultPrevented) return;
       const files = Array.from(e.dataTransfer?.files ?? []);
       if (!files.length) return;
       e.preventDefault();
       addPicked(() => fromWebFiles(files));
     };
     const onPaste = (e: ClipboardEvent) => {
-      const files = Array.from(e.clipboardData?.files ?? []);
+      if (e.defaultPrevented || !e.clipboardData) return;
+      // Cells copied from a spreadsheet (or rich text from a document) come
+      // with a picture of themselves; the text is what was meant.
+      if (e.clipboardData.types.includes('text/plain')) return;
+      const files = Array.from(e.clipboardData.files);
       if (!files.length) return;
       e.preventDefault();
       addPicked(() => fromWebFiles(files));
     };
-    window.addEventListener('dragover', onDragOver);
-    window.addEventListener('drop', onDrop);
-    window.addEventListener('paste', onPaste);
+    node.addEventListener('dragover', onDragOver);
+    node.addEventListener('drop', onDrop);
+    node.addEventListener('paste', onPaste);
     return () => {
-      window.removeEventListener('dragover', onDragOver);
-      window.removeEventListener('drop', onDrop);
-      window.removeEventListener('paste', onPaste);
+      node.removeEventListener('dragover', onDragOver);
+      node.removeEventListener('drop', onDrop);
+      node.removeEventListener('paste', onPaste);
     };
-  }, [composerShowing, addPicked]);
+  }, [chatDropNode, addPicked]);
 
   // Retry and Continue pick the last turn up from its saved history rather
   // than sending the request again. While running this is the stall prompt's
@@ -851,7 +865,7 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
       ) : null}
 
       {activeTab === 'chat' ? (
-        <>
+        <View ref={chatDropRef} style={styles.chatTab}>
           <ChatList
             key={currentId ?? 'none'}
             entries={entries}
@@ -956,7 +970,7 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
               )}
             </View>
           </View>
-        </>
+        </View>
       ) : activeTab === 'files' ? (
         <FilesPanel projectId={currentId} />
       ) : (
@@ -1605,6 +1619,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   sendBtnIdle: { backgroundColor: colors.raised },
+  chatTab: { flex: 1 },
   attachBtn: {
     width: 40,
     height: 44,
