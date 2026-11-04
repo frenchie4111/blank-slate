@@ -8,14 +8,16 @@ name: Test & Publish app update
 # Branch pushes are path-filtered to the app. Tag pushes are not, and can't be:
 # GitHub doesn't evaluate path filters for tags, so every matching tag runs
 # this workflow. That is intended, because the tag is the instruction to ship.
-# The pattern requires a digit, not a bare `v*`, so a tag like `vendor-bump`
-# doesn't match.
+# The pattern matches only vX.Y.Z, so neither `vendor-bump` nor a
+# pre-release tag ships.
 on:
   push:
     branches:
       - "**"
     tags:
-      - "v[0-9]*"
+      # Releases only: vX.Y.Z. `+` repeats the preceding class in GitHub's
+      # filter syntax, so this rejects `vendor-bump` and `v1.3.0-rc.1` alike.
+      - "v[0-9]+.[0-9]+.[0-9]+"
     paths:
       - "src/**"
       - "assets/**"
@@ -77,6 +79,13 @@ jobs:
           # text and would otherwise reach the shell as syntax.
           TAG: ${{ github.ref_name }}
         run: |
+          # Also checked here because a dispatch against a tag skips the
+          # trigger's pattern. Pre-release tags aren't supported: they would
+          # publish as full releases.
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::$TAG is not a release tag (vX.Y.Z)."
+            exit 1
+          fi
           version=$(node -p "require('./app.json').expo.version")
           if [ "$TAG" != "v$version" ]; then
             echo "::error::Tag $TAG does not match expo.version $version in app.json."
