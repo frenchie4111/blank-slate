@@ -33,6 +33,13 @@ let stage = "idle";
 /** Whether the check in flight came from the menu and so deserves an answer. */
 let manual = false;
 
+/**
+ * Whether the user was told an update is downloading. If that download then
+ * fails, they're waiting on a restart prompt that will never come, so the
+ * failure is reported even though the check is no longer `manual`.
+ */
+let promisedDownload = false;
+
 /** The version that has downloaded, once `stage` is "ready". */
 let readyVersion = null;
 
@@ -95,14 +102,16 @@ function fail(error) {
     // for one failure. The first one handles it.
     if (stage === "idle") return;
 
-    const shouldTell = manual;
+    const shouldTell = manual || (stage === "downloading" && promisedDownload);
+    const message = stage === "downloading" ? "The update couldn't be downloaded." : "Couldn't check for updates.";
     stage = "idle";
     manual = false;
+    promisedDownload = false;
 
     if (shouldTell) {
         dialog.showMessageBox({
             type: "warning",
-            message: "Couldn't check for updates.",
+            message,
             detail: error.message,
         });
     }
@@ -159,6 +168,7 @@ function startUpdates() {
         log(`found ${info.version}`);
         // `autoDownload` is on, so the download has already started.
         stage = "downloading";
+        promisedDownload = manual;
 
         if (manual) {
             dialog.showMessageBox({
@@ -190,6 +200,7 @@ function startUpdates() {
         log(`downloaded ${info.version}`);
         stage = "ready";
         readyVersion = info.version;
+        promisedDownload = false;
         offer(info.version);
     });
 

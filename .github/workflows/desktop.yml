@@ -165,7 +165,11 @@ jobs:
     permissions:
       contents: write
 
-    concurrency: blank-slate-desktop-release-${{ matrix.os }}
+    # Per tag and platform. Only two runs of the same tag (a push and a retry)
+    # queue behind each other, and they write to the same draft. Different
+    # tags run independently, so a newer queued run can't silently cancel an
+    # older tag's pending one.
+    concurrency: blank-slate-desktop-release-${{ github.ref_name }}-${{ matrix.os }}
 
     defaults:
       run:
@@ -275,5 +279,16 @@ jobs:
           gh release download "$TAG" --pattern 'BlankSlate-*.dmg' --pattern 'BlankSlate-*.zip' --pattern 'BlankSlate-*.exe'
           sha256sum BlankSlate-* | tee ../SHA256SUMS.txt
           cd .. && gh release upload "$TAG" SHA256SUMS.txt --clobber
+      # Latest only if this is the highest version published. electron-updater
+      # resolves updates through /releases/latest, so the Latest flag *is* the
+      # update feed. A backport (v1.1.1 after v1.2.0) marked Latest would stop
+      # 1.2.x installs seeing 1.2.x updates until the next release. Leaving
+      # the flag off doesn't help: GitHub marks a newly published release
+      # Latest by default.
       - name: Publish the release
-        run: gh release edit "$TAG" --draft=false --latest
+        run: |
+          highest=$(gh release list --exclude-drafts --exclude-pre-releases --limit 100 --json tagName --jq '.[].tagName' \
+            | { cat; echo "$TAG"; } | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+          if [ "$highest" = "$TAG" ]; then latest=true; else latest=false; fi
+          echo "Highest published version: $highest; marking $TAG Latest: $latest"
+          gh release edit "$TAG" --draft=false --latest="$latest"
