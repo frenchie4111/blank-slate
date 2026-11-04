@@ -371,12 +371,14 @@ function flushNow(b: Buffer): void {
 const STORE_PREFIX = 'store:';
 const MAX_SHOTS_WEB = 10;
 
+export type ShotCapture = { kind: 'base64' | 'data-uri'; data: string };
+
 /**
- * Records a capture: a view-shot temp file (native) or a data URL (web).
+ * Records a capture: base64 JPEG data (native) or a data URL (web).
  * Returns null if it couldn't be stored.
  */
 export async function addScreenshot(
-  capture: string,
+  capture: ShotCapture,
   w: number,
   h: number,
   reason: string,
@@ -386,14 +388,14 @@ export async function addScreenshot(
   if (buf !== b) return null;
   let uri: string;
   const stamp = Date.now().toString(36);
-  if (fs?.documentDirectory && !capture.startsWith('data:')) {
+  if (capture.kind === 'base64' && fs?.documentDirectory) {
     const dir = projectDir(b.projectId);
     await fs.makeDirectoryAsync(dir, { intermediates: true }).catch(() => {});
     uri = `${dir}shot-${stamp}.jpg`;
-    await fs.moveAsync({ from: capture, to: uri });
-  } else if (capture.startsWith('data:')) {
+    await fs.writeAsStringAsync(uri, capture.data, { encoding: fs.EncodingType.Base64 });
+  } else if (capture.kind === 'data-uri') {
     const key = `project:${b.projectId}:debug:shot:${stamp}`;
-    await AsyncStorage.setItem(key, capture);
+    await AsyncStorage.setItem(key, capture.data);
     uri = STORE_PREFIX + key;
   } else {
     return null;

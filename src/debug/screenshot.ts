@@ -48,14 +48,17 @@ async function doCapture(reason: string): Promise<Capture> {
   const widthPx = Math.min(TARGET_WIDTH_PX, Math.round(frame.w * scale));
   const heightPx = Math.round((frame.h / frame.w) * widthPx);
   try {
-    const result = await captureView(target as never, {
+    // Native captures as base64 rather than a temp file: view-shot's temp
+    // files live in tmp/, which expo-file-system's legacy API can't move from.
+    const kind = Platform.OS === 'web' ? 'data-uri' : 'base64';
+    const data = await captureView(target as never, {
       format: 'jpg',
       quality: QUALITY,
       width: widthPx / scale,
       height: heightPx / scale,
-      result: Platform.OS === 'web' ? 'data-uri' : 'tmpfile',
+      result: kind,
     });
-    const event = await history.addScreenshot(result, widthPx, heightPx, reason);
+    const event = await history.addScreenshot({ kind, data }, widthPx, heightPx, reason);
     return event ? { ok: true, event } : { ok: false, error: 'Could not store the screenshot.' };
   } catch (e) {
     return { ok: false, error: `Capture failed: ${(e as Error).message}` };
