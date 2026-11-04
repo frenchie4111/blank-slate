@@ -2,13 +2,17 @@ import { Ionicons } from '@expo/vector-icons';
 import { StatusBar } from 'expo-status-bar';
 import React from 'react';
 import {
+  ActionSheetIOS,
   ActivityIndicator,
+  Alert,
   Animated,
   Easing,
+  Image,
   KeyboardAvoidingView,
   Linking,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -20,6 +24,20 @@ import { buildPrompt, tileFor, type Listing } from '../appstore/catalog';
 import * as shotImages from '../appstore/shotImages';
 import { runAgentTurn, type AgentEvent, type AgentRun } from '../agent/agent';
 import type { ChatMessage } from '../agent/openrouter';
+import { modelAcceptsImages } from '../agent/vision';
+import {
+  composeRequest,
+  entryAttachments,
+  fromWebFiles,
+  MAX_ATTACHMENTS,
+  pickDocuments,
+  pickPhotos,
+  pickWebFiles,
+  saveAttachments,
+  type Attachment,
+  type PickResult,
+  type SavedAttachment,
+} from '../chat/uploads';
 import { AppViewport } from '../dynamic/AppViewport';
 import { DynamicView, type RenderError } from '../dynamic/DynamicView';
 import { clearCompileCache } from '../dynamic/resolver';
@@ -71,6 +89,13 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
   const wide = useWideLayout();
   const [entries, setEntries] = React.useState<Entry[]>([]);
   const [input, setInput] = React.useState('');
+  // Files attached to the message being written, and why the last ones
+  // couldn't be (too big, wrong type, too many).
+  const [attachments, setAttachments] = React.useState<Attachment[]>([]);
+  const [attachError, setAttachError] = React.useState<string | null>(null);
+  const [attaching, setAttaching] = React.useState(false);
+  const attachmentsRef = React.useRef(attachments);
+  attachmentsRef.current = attachments;
   const [running, setRunning] = React.useState(false);
   const [reasoningTokens, setReasoningTokens] = React.useState(0);
   // The tool call the in-flight request is writing, if any (its arguments,
@@ -174,6 +199,8 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
       chatScrollRef.current = newChatScrollMemory();
       setCurrentId(nextId);
       setEntries([]);
+      setAttachments([]);
+      setAttachError(null);
       historyRef.current = [];
       chatLoadRef.current = loadChat(nextId).then((snapshot) => {
         if (activeProjectRef.current !== nextId) return;
@@ -296,11 +323,18 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
   }, []);
 
   // text null continues the last turn from its saved history (Retry, Continue).
+  // files were attached to the message and are already in the app's files.
   const doTurn = React.useCallback(
-    async (text: string | null): Promise<void> => {
+    async (text: string | null, files: SavedAttachment[] = []): Promise<void> => {
       setRunning(true);
       stoppedRef.current = false;
-      if (text !== null) setEntries((prev) => [...prev, { kind: 'user', id: `u-${prev.length}`, text }]);
+      if (text !== null) {
+        const shown = files.length ? { attachments: entryAttachments(files) } : {};
+        setEntries((prev) => [...prev, { kind: 'user', id: `u-${prev.length}`, text, ...shown }]);
+      }
+      // What the model gets: the words plus a note on each file. Images are
+      // sent as images only if the model can see them.
+      let request = text === null ? null : composeRequest(text, files, false);
       const projectAtStart = activeProjectRef.current;
       const priorHistory = historyRef.current;
       // Screenshot the result once the turn is over, if it changed any files.
@@ -315,6 +349,9 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
           projectAtStart ? markTurnStarted(projectAtStart) : null,
           projectAtStart ? projectStore.get(projectAtStart) : null,
         ]);
+        if (text !== null && files.some((f) => f.kind === 'image')) {
+          request = composeRequest(text, files, await modelAcceptsImages(apiKey, model));
+        }
         if (stoppedRef.current) throw new Error('Aborted');
         const run = runAgentTurn(
           {
@@ -325,7 +362,7 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
             vibe: project?.vibe,
           },
           priorHistory,
-          text,
+          request?.text ?? null,
           (ev) => {
             // Saved as the turn goes, so closing the app mid-turn keeps the
             // request and the tool rounds already done.
@@ -336,6 +373,7 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
               return prev;
             });
           },
+          request?.images,
         );
         runRef.current = run;
         const outcome = await run.result;
@@ -356,11 +394,11 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
         // record but the request itself.
         if (stoppedRef.current && projectAtStart === activeProjectRef.current) {
           const nextHistory: ChatMessage[] =
-            text === null
+            request === null
               ? priorHistory
               : [
                   ...priorHistory,
-                  { role: 'user', content: text },
+                  { role: 'user', content: request.text },
                   { role: 'assistant', content: '(Stopped by the user before finishing.)' },
                 ];
           historyRef.current = nextHistory;
@@ -390,9 +428,9 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
   );
 
   const runTurn = React.useCallback(
-    async (text: string | null): Promise<void> => {
-      if ((text !== null && !text.trim()) || turnRef.current) return;
-      const turn = doTurn(text);
+    async (text: string | null, files: SavedAttachment[] = []): Promise<void> => {
+      if ((text !== null && !text.trim() && !files.length) || turnRef.current) return;
+      const turn = doTurn(text, files);
       turnRef.current = turn;
       try {
         await turn;
@@ -422,10 +460,106 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
 
   const send = async () => {
     const text = input.trim();
-    if (!text || running) return;
+    if ((!text && !attachments.length) || running || attaching) return;
+    let files: SavedAttachment[] = [];
+    if (attachments.length) {
+      // Saved first, so a failure (web storage full) keeps the message and
+      // its attachments in the composer.
+      setAttaching(true);
+      try {
+        files = await saveAttachments(attachments);
+      } catch (e) {
+        setAttachError((e as Error).message);
+        return;
+      } finally {
+        setAttaching(false);
+      }
+    }
     setInput('');
-    await runTurn(text);
+    setAttachments([]);
+    setAttachError(null);
+    await runTurn(text, files);
   };
+
+  // Adds what a picker, drop or paste produced, up to MAX_ATTACHMENTS.
+  const addPicked = React.useCallback(async (pick: () => Promise<PickResult>) => {
+    setAttaching(true);
+    try {
+      const { attachments: picked, errors } = await pick();
+      const room = Math.max(0, MAX_ATTACHMENTS - attachmentsRef.current.length);
+      if (picked.length > room) errors.push(`You can attach up to ${MAX_ATTACHMENTS} files to a message.`);
+      const next = [...attachmentsRef.current, ...picked.slice(0, room)];
+      attachmentsRef.current = next;
+      setAttachments(next);
+      setAttachError(errors.length ? errors.join('\n') : null);
+    } catch (e) {
+      setAttachError((e as Error).message);
+    } finally {
+      setAttaching(false);
+    }
+  }, []);
+
+  const removeAttachment = (id: string) => {
+    setAttachments((prev) => prev.filter((a) => a.id !== id));
+    setAttachError(null);
+  };
+
+  const attach = () => {
+    const room = MAX_ATTACHMENTS - attachments.length;
+    if (room <= 0) {
+      setAttachError(`You can attach up to ${MAX_ATTACHMENTS} files to a message.`);
+      return;
+    }
+    if (Platform.OS === 'web') {
+      addPicked(async () => fromWebFiles(await pickWebFiles()));
+      return;
+    }
+    const photos = () => addPicked(() => pickPhotos(room));
+    const files = () => addPicked(pickDocuments);
+    if (Platform.OS === 'ios') {
+      ActionSheetIOS.showActionSheetWithOptions(
+        { options: ['Photo Library', 'Files', 'Cancel'], cancelButtonIndex: 2, userInterfaceStyle: 'dark' },
+        (i) => (i === 0 ? photos() : i === 1 ? files() : undefined),
+      );
+    } else {
+      Alert.alert('Attach', undefined, [
+        { text: 'Photo Library', onPress: photos },
+        { text: 'Files', onPress: files },
+        { text: 'Cancel', style: 'cancel' },
+      ]);
+    }
+  };
+
+  // Web and desktop: drop files onto the chat, or paste an image, while the
+  // composer is showing. Your apps has its own drop target for .blankslate
+  // files and isn't covered by this.
+  const composerShowing = !appsOpen && activeTab === 'chat' && (wide ? sidebarOpen : chatVisible);
+  React.useEffect(() => {
+    if (Platform.OS !== 'web' || typeof window === 'undefined' || !composerShowing) return;
+    const onDragOver = (e: DragEvent) => {
+      if (e.dataTransfer?.types.includes('Files')) e.preventDefault();
+    };
+    const onDrop = (e: DragEvent) => {
+      const files = Array.from(e.dataTransfer?.files ?? []);
+      if (!files.length) return;
+      e.preventDefault();
+      addPicked(() => fromWebFiles(files));
+    };
+    const onPaste = (e: ClipboardEvent) => {
+      const files = Array.from(e.clipboardData?.files ?? []);
+      if (!files.length) return;
+      e.preventDefault();
+      addPicked(() => fromWebFiles(files));
+    };
+    window.addEventListener('dragover', onDragOver);
+    window.addEventListener('drop', onDrop);
+    window.addEventListener('paste', onPaste);
+    return () => {
+      window.removeEventListener('dragover', onDragOver);
+      window.removeEventListener('drop', onDrop);
+      window.removeEventListener('paste', onPaste);
+    };
+  }, [composerShowing, addPicked]);
 
   // Retry and Continue pick the last turn up from its saved history rather
   // than sending the request again. While running this is the stall prompt's
@@ -621,7 +755,7 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
   // accepted never runs, even if it became current some other way (e.g. the
   // app before it in the list was deleted).
   const canRun = appOpened && !!currentProject && !projectStore.needsTrustNotice(currentProject);
-  const canSend = !!input.trim() && !running;
+  const canSend = (!!input.trim() || attachments.length > 0) && !running && !attaching;
 
   const chatPanel = (
     <>
@@ -736,7 +870,47 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
           <View
             style={[styles.composerWrap, { paddingBottom: 10 + (keyboard.shown ? 0 : insets.bottom) }]}
           >
+            {attachError ? (
+              <View style={styles.attachError}>
+                <Ionicons name="alert-circle-outline" size={14} color={colors.danger} style={styles.attachErrorIcon} />
+                <Text style={styles.attachErrorText}>{attachError}</Text>
+                <Pressable
+                  onPress={() => setAttachError(null)}
+                  hitSlop={8}
+                  accessibilityRole="button"
+                  accessibilityLabel="Dismiss"
+                >
+                  <Ionicons name="close" size={14} color={colors.dust} />
+                </Pressable>
+              </View>
+            ) : null}
+            {attachments.length ? (
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                style={styles.pendingRow}
+                contentContainerStyle={styles.pendingRowContent}
+                keyboardShouldPersistTaps="handled"
+              >
+                {attachments.map((a) => (
+                  <PendingChip key={a.id} attachment={a} onRemove={() => removeAttachment(a.id)} />
+                ))}
+              </ScrollView>
+            ) : null}
             <View style={styles.composer}>
+              <Pressable
+                style={({ pressed }) => [styles.attachBtn, pressed && styles.pressed]}
+                onPress={attach}
+                disabled={attaching}
+                accessibilityRole="button"
+                accessibilityLabel="Attach files"
+              >
+                {attaching ? (
+                  <ActivityIndicator size="small" color={colors.dust} />
+                ) : (
+                  <Ionicons name="attach" size={22} color={colors.dust} />
+                )}
+              </Pressable>
               <TextInput
                 keyboardAppearance="dark"
                 value={input}
@@ -1127,6 +1301,39 @@ async function isUntouched(id: string): Promise<boolean> {
   return !!code && code.includes('<Text style={styles.title}>Blank Slate</Text>');
 }
 
+// An attachment waiting in the composer: a thumbnail for images, a file chip
+// otherwise, each with a remove button.
+function PendingChip({ attachment, onRemove }: { attachment: Attachment; onRemove: () => void }) {
+  const remove = (
+    <Pressable
+      onPress={onRemove}
+      hitSlop={6}
+      style={({ pressed }) => [styles.chipRemove, pressed && styles.pressed]}
+      accessibilityRole="button"
+      accessibilityLabel={`Remove ${attachment.name}`}
+    >
+      <Ionicons name="close" size={12} color={colors.chalk} />
+    </Pressable>
+  );
+  if (attachment.kind === 'image') {
+    return (
+      <View style={styles.thumbWrap}>
+        <Image source={{ uri: attachment.content }} style={styles.thumb} accessibilityLabel={attachment.name} />
+        {remove}
+      </View>
+    );
+  }
+  return (
+    <View style={styles.fileChip}>
+      <Ionicons name="document-text-outline" size={16} color={colors.dust} />
+      <Text style={styles.fileChipText} numberOfLines={1}>
+        {attachment.name}
+      </Text>
+      {remove}
+    </View>
+  );
+}
+
 function formatRenderErrorPrompt(err: RenderError): string {
   const ref = err.eventId !== undefined ? ` (error #${err.eventId})` : '';
   const label =
@@ -1372,7 +1579,7 @@ const styles = StyleSheet.create({
     gap: 8,
     paddingVertical: 6,
     paddingRight: 6,
-    paddingLeft: 16,
+    paddingLeft: 4,
     borderRadius: radii.composer,
     borderWidth: 1,
     borderColor: colors.lineStrong,
@@ -1398,5 +1605,65 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   sendBtnIdle: { backgroundColor: colors.raised },
+  attachBtn: {
+    width: 40,
+    height: 44,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  attachError: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    marginBottom: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: radii.chip,
+    borderWidth: 1,
+    borderColor: colors.dangerBorder,
+    backgroundColor: colors.dangerBg,
+  },
+  attachErrorIcon: { marginTop: 2 },
+  attachErrorText: { flex: 1, fontFamily: fonts.body, fontSize: 13, lineHeight: 18, color: colors.dangerSoft },
+  pendingRow: { flexGrow: 0, marginBottom: 8 },
+  // Top padding leaves room for the remove buttons that overhang each chip.
+  pendingRowContent: { gap: 8, paddingTop: 6, paddingRight: 6 },
+  thumbWrap: { width: 56, height: 56 },
+  thumb: {
+    width: 56,
+    height: 56,
+    borderRadius: radii.chip,
+    borderWidth: 1,
+    borderColor: colors.lineStrong,
+    backgroundColor: colors.raised,
+  },
+  fileChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    height: 56,
+    maxWidth: 200,
+    paddingLeft: 12,
+    paddingRight: 14,
+    borderRadius: radii.chip,
+    borderWidth: 1,
+    borderColor: colors.lineStrong,
+    backgroundColor: colors.board,
+  },
+  fileChipText: { flexShrink: 1, fontFamily: fonts.mono, fontSize: 12, color: colors.chalkSoft },
+  chipRemove: {
+    position: 'absolute',
+    top: -6,
+    right: -6,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: colors.lineStrong,
+    backgroundColor: colors.raised,
+  },
   stopSquare: { width: 12, height: 12, borderRadius: 3, backgroundColor: colors.slate },
 });

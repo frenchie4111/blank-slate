@@ -4,6 +4,7 @@ import React from 'react';
 import {
   ActivityIndicator,
   Animated,
+  Image,
   Keyboard,
   Platform,
   Pressable,
@@ -14,8 +15,9 @@ import {
   type NativeScrollEvent,
   type NativeSyntheticEvent,
 } from 'react-native';
-import type { Entry, ServerToolEntry, ToolEntry } from '../project/chatStore';
+import type { Entry, EntryAttachment, ServerToolEntry, ToolEntry } from '../project/chatStore';
 import { colors, fonts, radii, space } from '../theme';
+import { readFile, subscribe } from '../vfs/vfs';
 import { Markdown } from './Markdown';
 import { buildRenderItems, ToolGroupCard, type PendingCall, type RenderItem } from './ToolGroup';
 
@@ -527,9 +529,20 @@ const EntryView = React.memo(function EntryView({
   onRetry?: () => void;
 }) {
   if (entry.kind === 'user') {
-    return (
+    const bubble = entry.text ? (
       <View style={styles.userBubble}>
         <Text style={styles.userText}>{entry.text}</Text>
+      </View>
+    ) : null;
+    if (!entry.attachments?.length) return bubble;
+    return (
+      <View style={styles.userTurn}>
+        <View style={styles.userFiles}>
+          {entry.attachments.map((f) => (
+            <SentAttachment key={f.path} attachment={f} />
+          ))}
+        </View>
+        {bubble}
       </View>
     );
   }
@@ -590,6 +603,55 @@ const EntryView = React.memo(function EntryView({
     </View>
   );
 });
+
+const SENT_THUMB_H = 120;
+const SENT_THUMB_MAX_W = 240;
+
+// A file sent with a message, shown from the app's files: a thumbnail for an
+// image (until it's deleted or stops being an image), a chip with its path
+// otherwise.
+function SentAttachment({ attachment }: { attachment: EntryAttachment }) {
+  const [uri, setUri] = React.useState<string | null>(null);
+  const [aspect, setAspect] = React.useState(1);
+  React.useEffect(() => {
+    if (attachment.kind !== 'image') return;
+    let alive = true;
+    const load = () =>
+      readFile(attachment.path)
+        .then((c) => {
+          if (!alive) return;
+          const image = c?.startsWith('data:image/') ? c : null;
+          setUri(image);
+          if (image) Image.getSize(image, (w, h) => alive && h > 0 && setAspect(w / h), () => {});
+        })
+        .catch(() => {});
+    load();
+    const unsub = subscribe((change) => {
+      if (change.path === attachment.path) load();
+    });
+    return () => {
+      alive = false;
+      unsub();
+    };
+  }, [attachment.kind, attachment.path]);
+  if (uri) {
+    // Fixed height, width from the image's shape (within limits).
+    const width = Math.round(Math.min(SENT_THUMB_MAX_W, Math.max(SENT_THUMB_H / 2, SENT_THUMB_H * aspect)));
+    return <Image source={{ uri }} style={[styles.sentThumb, { width }]} accessibilityLabel={attachment.path} />;
+  }
+  return (
+    <View style={styles.sentChip}>
+      <Ionicons
+        name={attachment.kind === 'image' ? 'image-outline' : 'document-text-outline'}
+        size={15}
+        color={colors.dust}
+      />
+      <Text style={styles.sentChipText} numberOfLines={1}>
+        {attachment.path}
+      </Text>
+    </View>
+  );
+}
 
 // Long-press copies the message on native; on web the text is selectable.
 // No visible chrome until it's used.
@@ -683,6 +745,37 @@ const styles = StyleSheet.create({
     backgroundColor: colors.chalk,
   },
   userText: { fontFamily: fonts.body, fontSize: 15, lineHeight: 22, color: colors.slate },
+  // Attachments sit above the bubble, right-aligned like it. The bubble's
+  // own top margin then separates it from them.
+  userTurn: { alignItems: 'flex-end', marginTop: 8 },
+  userFiles: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'flex-end',
+    alignItems: 'flex-end',
+    gap: 6,
+    maxWidth: '80%',
+  },
+  sentThumb: {
+    height: SENT_THUMB_H,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: colors.lineStrong,
+    backgroundColor: colors.raised,
+  },
+  sentChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    maxWidth: 240,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: radii.chip,
+    borderWidth: 1,
+    borderColor: colors.lineStrong,
+    backgroundColor: colors.board,
+  },
+  sentChipText: { flexShrink: 1, fontFamily: fonts.mono, fontSize: 12, color: colors.chalkSoft },
   assistant: { alignSelf: 'stretch' },
   notice: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 2 },
   noticeText: { fontFamily: fonts.mono, fontSize: 12, color: colors.dust },

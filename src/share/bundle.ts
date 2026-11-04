@@ -36,7 +36,7 @@ const FILES_DIR = 'files/';
 const MANIFEST = 'manifest.json';
 const CHAT = 'chat.json';
 
-const TEXT_EXTS = [
+export const TEXT_EXTS = [
   '.tsx', '.ts', '.jsx', '.js', '.mjs', '.cjs',
   '.json', '.md', '.txt', '.csv', '.svg', '.html', '.css', '.xml', '.yml', '.yaml',
 ];

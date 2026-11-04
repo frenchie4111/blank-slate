@@ -21,8 +21,12 @@ export type ServerToolEntry = {
   result?: ServerToolResult;
 };
 
+// A file the user attached to a message. The file itself is in the app's
+// files at path; the transcript only keeps this, and shows it from there.
+export type EntryAttachment = { path: string; name: string; kind: 'image' | 'text' };
+
 export type Entry =
-  | { kind: 'user'; id: string; text: string }
+  | { kind: 'user'; id: string; text: string; attachments?: EntryAttachment[] }
   | { kind: 'assistant'; id: string; blockIndex: number; text: string }
   | ToolEntry
   | ServerToolEntry
