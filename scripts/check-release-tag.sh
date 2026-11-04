@@ -14,6 +14,8 @@
 
 set -euo pipefail
 
+cd "$(dirname "$0")/.."
+
 : "${TAG:?TAG must be set to the tag being released}"
 
 if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
