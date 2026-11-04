@@ -120,3 +120,7 @@ cover). Only import `.blankslate` files from people you trust.
 ## Status
 
 A personal, experimental project. Expect rough edges and breaking changes.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
