@@ -1,4 +1,5 @@
 import { streamChatCompletion, type ChatMessage, type ContentPart, type ToolCall } from './openrouter';
+import { LeftAppError, leftAppSince } from './appLifecycle';
 import { IMAGE_ATTACHED, IMAGE_DROPPED } from './debugTools';
 import { executeTool, SERVER_TOOL_DEFINITIONS, TOOL_DEFINITIONS, type ToolResult } from './tools';
 import { systemPromptFor } from './systemPrompt';
@@ -8,6 +9,8 @@ const MAX_TOKENS = 16384;
 // thinking and never call a tool. Capping reasoning at half leaves room to act.
 const REASONING_BUDGET = 8192;
 const MAX_TURNS = 25;
+// Tool-call progress (path, chars) re-renders at most this often.
+const TOOL_PROGRESS_INTERVAL_MS = 250;
 // Screenshots stay as images only while the turn that took them is running,
 // and only the latest few: each one is resent with every later request.
 const MAX_LIVE_IMAGES = 2;
@@ -38,9 +41,13 @@ export type AgentEvent =
   // Approximate reasoning tokens so far in the current request; resets to 0
   // when the next request starts.
   | { type: 'reasoning'; tokens: number }
-  // The model started writing a tool call; arguments (often a whole file)
-  // stream in before tool_use fires.
-  | { type: 'tool_call_start'; name: string }
+  // The model is writing a tool call; arguments (often a whole file) stream in
+  // before tool_use fires. Repeats, throttled, as they grow. path comes from
+  // the partial JSON once it's there; chars stays 0 on providers that send the
+  // arguments in one piece at the end.
+  | { type: 'tool_call_progress'; name: string; path: string | null; chars: number }
+  // No bytes from the model for a long while (true), or bytes again (false).
+  | { type: 'stall'; stalled: boolean }
   | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown>; blockIndex: number }
   | { type: 'tool_result'; id: string; ok: boolean; text: string }
   | {
@@ -51,6 +58,12 @@ export type AgentEvent =
       blockIndex: number;
     }
   | { type: 'server_tool_result'; id: string; result: ServerToolResult }
+  // The user left the app and that cut the connection; offered as Continue,
+  // not as an error.
+  | { type: 'paused' }
+  // History as it stands mid-turn, already closed so it's valid to send, for
+  // saving in case the app is killed before the turn ends.
+  | { type: 'checkpoint'; history: ChatMessage[] }
   | { type: 'iteration_end' }
   | { type: 'done' }
   | { type: 'error'; message: string };
@@ -69,7 +82,12 @@ export type AgentConfig = {
 
 // How a turn ended. 'stopped' and 'error' still carry the partial history, so
 // the next turn knows what already happened (files written, text said).
-export type TurnStatus = 'done' | 'stopped' | 'error';
+// 'paused': the user left the app mid-turn. 'interrupted': the app was killed
+// mid-turn (only ever set when the chat is next loaded).
+export type TurnStatus = 'done' | 'stopped' | 'error' | 'paused' | 'interrupted';
+
+// Closes a checkpoint, so a turn cut short by the app being killed reads right.
+export const INTERRUPTED_NOTE = '(Interrupted: Blank Slate was closed while this was running.)';
 
 export type TurnOutcome = {
   history: ChatMessage[];
@@ -78,29 +96,41 @@ export type TurnOutcome = {
 
 export type AgentRun = {
   result: Promise<TurnOutcome>;
-  abort: () => void;
+  // 'stalled' is the user giving up on a model that went quiet, to resend.
+  abort: (reason?: 'user' | 'stalled') => void;
 };
 
+// userText null continues the last turn instead (Retry, Continue): its
+// request and any finished tool rounds are already in prior.
 export function runAgentTurn(
   config: AgentConfig,
   prior: ChatMessage[],
-  userText: string,
+  userText: string | null,
   onEvent: (ev: AgentEvent) => void,
 ): AgentRun {
-  const messages: ChatMessage[] = [...prior, { role: 'user', content: userText }];
+  const messages: ChatMessage[] =
+    userText === null ? resumable(prior) : [...prior, { role: 'user', content: userText }];
+  const startedAt = Date.now();
   const systemMessage = systemMessageFor(config.autoAppIcons);
   const controller = new AbortController();
-  let aborted = false;
+  let aborted: 'user' | 'stalled' | null = null;
 
   const finish = (status: TurnStatus, note?: string): TurnOutcome => {
     closeTurn(messages, note);
     return { history: withoutImages(messages), status };
   };
 
+  const checkpoint = () => {
+    const copy = messages.slice();
+    closeTurn(copy, INTERRUPTED_NOTE);
+    onEvent({ type: 'checkpoint', history: withoutImages(copy) });
+  };
+
   const result = (async (): Promise<TurnOutcome> => {
     // Text streamed by the request in flight, kept for a stop mid-stream.
     let partial = '';
     try {
+      checkpoint();
       // Block indices keep UI entries ordered and unique across iterations. Each
       // iteration reserves: 0 = assistant text, 1 = web sources, 2.. = tool calls.
       let blockOffset = 0;
@@ -116,6 +146,7 @@ export function runAgentTurn(
         let lastReasoningTokens = 0;
         onEvent({ type: 'reasoning', tokens: 0 });
         partial = '';
+        let lastArgsAt = 0;
 
         const streamed = await streamChatCompletion(
           config.apiKey,
@@ -134,7 +165,17 @@ export function runAgentTurn(
               partial += delta;
               onEvent({ type: 'text_delta', delta, blockIndex: textBlock });
             },
-            onToolCall: (name) => onEvent({ type: 'tool_call_start', name }),
+            onToolCall: (name) => {
+              lastArgsAt = Date.now();
+              onEvent({ type: 'tool_call_progress', name, path: null, chars: 0 });
+            },
+            onToolArgs: (name, args) => {
+              const now = Date.now();
+              if (now - lastArgsAt < TOOL_PROGRESS_INTERVAL_MS) return;
+              lastArgsAt = now;
+              onEvent({ type: 'tool_call_progress', name, path: partialPath(args), chars: args.length });
+            },
+            onStall: (stalled) => onEvent({ type: 'stall', stalled }),
             onReasoning: (chars) => {
               // ~4 chars per token; only re-render every 50 tokens or so.
               const tokens = Math.round(chars / 4);
@@ -216,6 +257,7 @@ export function runAgentTurn(
             tool_call_id: call.id,
             content: toolResult.ok ? toolResult.text : `Error: ${toolResult.text}`,
           });
+          checkpoint();
         }
         // Tool results must directly follow the assistant message, so
         // screenshots go after all of them, as one user message.
@@ -240,8 +282,16 @@ export function runAgentTurn(
       return finish('error', `(Stopped after ${MAX_TURNS} rounds of tool calls without finishing.)`);
     } catch (e) {
       const message = (e as Error).message;
-      if (!aborted) onEvent({ type: 'error', message });
       if (partial.trim()) messages.push({ role: 'assistant', content: partial });
+      if (!aborted && (e instanceof LeftAppError || leftAppSince(startedAt))) {
+        if (__DEV__) console.log(`[agent] paused: the app was left mid-turn (${message})`);
+        onEvent({ type: 'paused' });
+        return finish('paused', '(Paused: the user left Blank Slate, which cut the connection. Nothing failed.)');
+      }
+      if (!aborted) onEvent({ type: 'error', message });
+      if (aborted === 'stalled') {
+        return finish('stopped', '(Cut off: the model stopped responding.)');
+      }
       return aborted
         ? finish('stopped', '(Stopped by the user before finishing.)')
         : finish('error', `(This reply failed: ${message})`);
@@ -250,8 +300,8 @@ export function runAgentTurn(
 
   return {
     result,
-    abort: () => {
-      aborted = true;
+    abort: (reason = 'user') => {
+      aborted = reason;
       controller.abort();
     },
   };
@@ -301,6 +351,11 @@ function withSources(
   const list = [...sources.values()].map((s) => `- ${s.title} — ${s.url}`).join('\n');
   const note = `Web sources I consulted for this:\n${list}`;
   return { ...message, content: message.content ? `${message.content}\n\n${note}` : note };
+}
+
+// The path from a tool call's still-incomplete JSON arguments, once its closing quote has arrived.
+function partialPath(args: string): string | null {
+  return /"path"\s*:\s*"([^"]+)"/.exec(args)?.[1] ?? null;
 }
 
 function parseArguments(
@@ -355,6 +410,20 @@ function withoutImages(messages: ChatMessage[]): ChatMessage[] {
   const copy = messages.slice();
   dropOldImages(copy, 0);
   return copy;
+}
+
+// For continuing a turn that ended early: drops the closing note (and any
+// partial reply it was appended to), leaving the request and every finished
+// tool round, so the model picks up from there. closeTurn has already
+// answered any tool call that never ran.
+function resumable(prior: ChatMessage[]): ChatMessage[] {
+  const messages = prior.slice();
+  while (messages.length) {
+    const last = messages[messages.length - 1];
+    if (last.role !== 'assistant' || last.tool_calls?.length) break;
+    messages.pop();
+  }
+  return messages;
 }
 
 // Leaves a stopped or failed turn as valid history: every tool call gets a

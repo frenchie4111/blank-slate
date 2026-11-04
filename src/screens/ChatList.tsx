@@ -17,13 +17,16 @@ import {
 import type { Entry, ServerToolEntry, ToolEntry } from '../project/chatStore';
 import { colors, fonts, radii, space } from '../theme';
 import { Markdown } from './Markdown';
-import { buildRenderItems, ToolGroupCard, type RenderItem } from './ToolGroup';
+import { buildRenderItems, ToolGroupCard, type PendingCall, type RenderItem } from './ToolGroup';
 
 // Scrolling back to within this distance of the bottom re-anchors.
 const ANCHOR_THRESHOLD = 32;
 // How long after a wheel/touch/key event a web scroll still counts as the
 // user's (wheel momentum keeps emitting events, so this only bridges gaps).
 const WEB_INPUT_WINDOW_MS = 300;
+// While running, this long without visible progress (text, a tool row
+// changing, a result) brings up a status row, so the chat never sits still.
+const IDLE_STATUS_MS = 1200;
 
 // Outlives a ChatList mount, so leaving for Files/History (or closing the
 // chat) and coming back restores where the reader was.
@@ -43,10 +46,14 @@ type Props = {
   entries: Entry[];
   running: boolean;
   reasoningTokens: number;
-  streaming: 'text' | 'call' | null;
+  pendingCall: PendingCall | null;
+  // No bytes from the model for a long while; offers Stop and Retry.
+  stalled: boolean;
   memory: React.RefObject<ChatScrollMemory>;
-  // Re-sends the latest request after a failed turn.
+  // Re-sends the latest request after a failed turn, or (while stalled)
+  // gives up on the quiet one and sends it again.
   onRetry: () => void;
+  onStop: () => void;
   // Sends one of the empty chat's starter prompts.
   onSuggest: (text: string) => void;
 };
@@ -72,22 +79,35 @@ export function ChatList({
   entries,
   running,
   reasoningTokens,
-  streaming,
+  pendingCall,
+  stalled,
   memory,
   onRetry,
+  onStop,
   onSuggest,
 }: Props) {
-  const items = React.useMemo(() => buildRenderItems(entries, running), [entries, running]);
+  const items = React.useMemo(
+    () => buildRenderItems(entries, running, pendingCall),
+    [entries, running, pendingCall],
+  );
   const last = items[items.length - 1];
-  // A live tool group shows its own spinner; otherwise show a status row
-  // whenever no reply text is streaming in. Long reasoning gets a row (with a
-  // count) even under a live tool group, so it never looks hung.
-  const thinking =
-    running &&
-    streaming !== 'text' &&
-    (!(last?.type === 'tools' && last.active) || reasoningTokens >= 200);
-  // Only the latest turn's error can be retried.
-  const retryId = running ? null : latestErrorId(items);
+  const idleSince = useIdleSince(running, entries, pendingCall);
+  // A live tool group always shows what's happening (a pending call being
+  // written, a tool running, or "Thinking…" between requests). Otherwise a
+  // status row covers the request's first moments, and any quiet spell after
+  // reply text (e.g. a provider that sends a whole tool call at the end).
+  // Long reasoning gets a row with a count even under a live tool group.
+  const liveGroup = last?.type === 'tools' && last.active;
+  const afterReply = last?.type === 'entry' && last.entry.kind !== 'user';
+  const status: 'thinking' | 'working' | null =
+    !running ? null
+    : reasoningTokens >= 200 ? 'thinking'
+    : liveGroup ? null
+    : !afterReply ? 'thinking'
+    : idleSince !== null ? 'working'
+    : null;
+  // Only the latest turn's error (or cut-short row) offers Retry / Continue.
+  const retryId = running ? null : latestRecoverableId(items);
 
   const scrollRef = React.useRef<ScrollView | null>(null);
   const anchoredRef = React.useRef(memory.current.anchored);
@@ -333,20 +353,73 @@ export function ChatList({
             />
           ))
         )}
-        {thinking ? (
+        {running && stalled ? (
+          <StallRow onStop={onStop} onRetry={onRetry} />
+        ) : status ? (
           <View style={styles.thinking}>
             <ActivityIndicator size="small" color={colors.dust} />
             <Text style={styles.thinkingText}>
-              {streaming === 'call'
-                ? 'Writing…'
-                : reasoningTokens >= 200
-                  ? `Thinking… ${formatTokens(reasoningTokens)} tokens`
-                  : 'Thinking…'}
+              {status === 'working' && idleSince !== null ? (
+                <WorkingLabel since={idleSince} />
+              ) : reasoningTokens >= 200 ? (
+                `Thinking… ${formatTokens(reasoningTokens)} tokens`
+              ) : (
+                'Thinking…'
+              )}
             </Text>
           </View>
         ) : null}
       </ScrollView>
       <JumpPill state={pill} onPress={jumpToLatest} />
+    </View>
+  );
+}
+
+// When visible progress last happened, once it's been quiet for
+// IDLE_STATUS_MS; null while things are moving.
+function useIdleSince(running: boolean, entries: Entry[], pendingCall: PendingCall | null): number | null {
+  const [idleSince, setIdleSince] = React.useState<number | null>(null);
+  React.useEffect(() => {
+    setIdleSince(null);
+    if (!running) return;
+    const at = Date.now();
+    const t = setTimeout(() => setIdleSince(at), IDLE_STATUS_MS);
+    return () => clearTimeout(t);
+  }, [running, entries, pendingCall]);
+  return idleSince;
+}
+
+// "Working…", then "Working… 23s" once the wait is long enough to count.
+function WorkingLabel({ since }: { since: number }) {
+  const [now, setNow] = React.useState(Date.now());
+  React.useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+  const s = Math.floor((now - since) / 1000);
+  return <>{s >= 3 ? `Working… ${s}s` : 'Working…'}</>;
+}
+
+function StallRow({ onStop, onRetry }: { onStop: () => void; onRetry: () => void }) {
+  return (
+    <View style={styles.stallCard}>
+      <ActivityIndicator size="small" color={colors.dust} />
+      <Text style={styles.stallText}>Still waiting on the model…</Text>
+      <Pressable
+        onPress={onStop}
+        style={({ pressed }) => [styles.stallBtn, pressed && styles.pressed]}
+        accessibilityRole="button"
+      >
+        <Text style={styles.stallBtnText}>Stop</Text>
+      </Pressable>
+      <Pressable
+        onPress={onRetry}
+        style={({ pressed }) => [styles.retryBtn, pressed && styles.pressed]}
+        accessibilityRole="button"
+      >
+        <Ionicons name="refresh" size={14} color={colors.slate} />
+        <Text style={styles.retryText}>Retry</Text>
+      </Pressable>
     </View>
   );
 }
@@ -415,12 +488,17 @@ function formatTokens(n: number): string {
   return n < 1000 ? String(n) : `${(n / 1000).toFixed(1)}k`;
 }
 
-function latestErrorId(items: RenderItem[]): string | null {
-  for (let i = items.length - 1; i >= 0; i--) {
+// Retry and Continue resume a turn without a new request, so a turn starts
+// after a user message or after the previous turn's end.
+function latestRecoverableId(items: RenderItem[]): string | null {
+  let i = items.length - 1;
+  if (items[i]?.type === 'turnEnd') i--;
+  for (; i >= 0; i--) {
     const it = items[i];
+    if (it.type === 'turnEnd') return null;
     if (it.type !== 'entry') continue;
     if (it.entry.kind === 'user') return null;
-    if (it.entry.kind === 'error') return it.id;
+    if (it.entry.kind === 'error' || it.entry.kind === 'cutShort') return it.id;
   }
   return null;
 }
@@ -461,6 +539,35 @@ const EntryView = React.memo(function EntryView({
       <View style={styles.notice}>
         <Ionicons name="stop-circle-outline" size={14} color={colors.dust} />
         <Text style={styles.noticeText}>{entry.text}</Text>
+      </View>
+    );
+  }
+  if (entry.kind === 'cutShort') {
+    const paused = entry.reason === 'paused';
+    return (
+      <View style={styles.cutCard}>
+        <Ionicons
+          name={paused ? 'pause-circle-outline' : 'power-outline'}
+          size={16}
+          color={colors.dust}
+          style={styles.errorIcon}
+        />
+        <View style={styles.errorBody}>
+          <Text style={styles.cutTitle}>
+            {paused ? 'Paused when you left Blank Slate' : 'Interrupted — Blank Slate was closed while this was running'}
+          </Text>
+          <Text style={styles.cutText}>Nothing went wrong. Continue picks up where it stopped.</Text>
+        </View>
+        {onRetry ? (
+          <Pressable
+            onPress={onRetry}
+            style={({ pressed }) => [styles.retryBtn, pressed && styles.pressed]}
+            accessibilityRole="button"
+          >
+            <Ionicons name="play" size={13} color={colors.slate} />
+            <Text style={styles.retryText}>Continue</Text>
+          </Pressable>
+        ) : null}
       </View>
     );
   }
@@ -517,6 +624,7 @@ function errorTitle(message: string): string {
   if (/output (limit|budget)/i.test(message)) return 'Reply cut off';
   if (/OpenRouter (5\d\d|429)/.test(message)) return 'The model provider had a problem';
   if (/OpenRouter 4\d\d/.test(message)) return 'OpenRouter rejected the request';
+  if (/^No response from the model|stream ended before/.test(message)) return 'The model stopped responding';
   if (/network|fetch|timed? ?out|connection/i.test(message)) return 'Connection problem';
   return "This turn didn't finish";
 }
@@ -606,6 +714,38 @@ const styles = StyleSheet.create({
   copiedText: { marginTop: 6, fontFamily: fonts.bodyMedium, fontSize: 12, color: colors.success },
   thinking: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 4 },
   thinkingText: { fontFamily: fonts.body, fontSize: 13, color: colors.dust },
+  cutCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    padding: 12,
+    borderRadius: radii.button,
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.board,
+  },
+  cutTitle: { fontFamily: fonts.bodySemi, fontSize: 13, color: colors.chalk },
+  cutText: { fontFamily: fonts.body, fontSize: 13, lineHeight: 19, color: colors.dust },
+  stallCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    padding: 12,
+    borderRadius: radii.button,
+    borderWidth: 1,
+    borderColor: colors.lineStrong,
+    backgroundColor: colors.board,
+  },
+  stallText: { flex: 1, fontFamily: fonts.body, fontSize: 13, color: colors.chalkSoft },
+  stallBtn: {
+    justifyContent: 'center',
+    height: 36,
+    paddingHorizontal: 14,
+    borderRadius: radii.chip,
+    borderWidth: 1,
+    borderColor: colors.line,
+  },
+  stallBtnText: { fontFamily: fonts.bodySemi, fontSize: 13, color: colors.chalk },
 
   pillWrap: {
     position: 'absolute',

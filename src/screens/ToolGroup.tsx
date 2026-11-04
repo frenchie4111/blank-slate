@@ -63,11 +63,28 @@ export type RenderItem =
 
 // ---- grouping ---------------------------------------------------------------
 
-export function buildRenderItems(entries: Entry[], running: boolean): RenderItem[] {
+// A tool call the model is still writing: it has a name and, once enough of
+// the arguments are in, a path, but no id or input yet.
+export type PendingCall = { name: string; path: string | null; chars: number };
+
+const PENDING_STEP_ID = 'pending-call';
+
+export function buildRenderItems(
+  entries: Entry[],
+  running: boolean,
+  pending: PendingCall | null = null,
+): RenderItem[] {
   const items: RenderItem[] = [];
   // path → last known line count, so a rewrite or delete can report "−N".
   const known = new Map<string, number>();
   let group: Extract<RenderItem, { type: 'tools' }> | null = null;
+  // Keyed by position, not by first step, so a group that starts as a pending
+  // call keeps its identity (and elapsed timer) once the real call lands.
+  const openGroup = () => {
+    group = { type: 'tools', id: `g-${items.length}`, steps: [], active: false };
+    items.push(group);
+    return group;
+  };
 
   for (const e of entries) {
     if (e.kind === 'turnEnd') {
@@ -76,12 +93,7 @@ export function buildRenderItems(entries: Entry[], running: boolean): RenderItem
       continue;
     }
     if (e.kind === 'tool' || e.kind === 'serverTool') {
-      const step = describe(e, known);
-      if (!group) {
-        group = { type: 'tools', id: `g-${e.id}`, steps: [], active: false };
-        items.push(group);
-      }
-      group.steps.push(step);
+      (group ?? openGroup()).steps.push(describe(e, known));
       continue;
     }
     // Whitespace-only text between tool calls shouldn't split a group.
@@ -90,9 +102,38 @@ export function buildRenderItems(entries: Entry[], running: boolean): RenderItem
     items.push({ type: 'entry', id: e.id, entry: e });
   }
 
+  if (running && pending) {
+    const last = items[items.length - 1];
+    const target = last?.type === 'tools' ? last : openGroup();
+    target.steps.push(describePending(pending, known));
+  }
   const last = items[items.length - 1];
   if (running && last?.type === 'tools') last.active = true;
   return items;
+}
+
+function describePending(p: PendingCall, known: Map<string, number>): ToolStep {
+  const step = describe(
+    { kind: 'tool', id: PENDING_STEP_ID, blockIndex: -1, name: p.name, input: p.path ? { path: p.path } : {} },
+    known,
+  );
+  // GLM writes the arguments in either order, so with content first the path
+  // only turns up at the very end. Until then: "Writing a file", and
+  // "Naming app ''" becomes "Naming app…".
+  const doing =
+    p.path ? step.doing
+    : p.name === 'write_file' ? 'Writing a file'
+    : p.name === 'edit_file' ? 'Editing a file'
+    : step.doing.replace(/ (\?|'')$/, '…');
+  return {
+    ...step,
+    doing,
+    detail: p.chars > 0 ? `${formatChars(p.chars)} chars` : null,
+  };
+}
+
+function formatChars(n: number): string {
+  return n < 1000 ? String(n) : `${(n / 1000).toFixed(1)}k`;
 }
 
 const lineCache = new Map<string, number>();
@@ -509,7 +550,8 @@ function sameStep(a: ToolStep, b: ToolStep): boolean {
     a.add === b.add &&
     a.del === b.del &&
     a.detail === b.detail &&
-    a.label === b.label
+    a.label === b.label &&
+    a.doing === b.doing
   );
 }
 

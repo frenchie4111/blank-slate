@@ -22,6 +22,8 @@ import { onAppError } from '../debug/instrument';
 import { scheduleAutoCapture } from '../debug/screenshot';
 import {
   loadChat,
+  markTurnEnded,
+  markTurnStarted,
   saveChat,
   type Entry,
   type ServerToolEntry,
@@ -37,6 +39,7 @@ import { SIDEBAR_WIDTH, useWideLayout } from '../theme/layout';
 import { LogoMark } from '../theme/LogoMark';
 import * as vfs from '../vfs/vfs';
 import { ChatList, newChatScrollMemory, type ChatScrollMemory } from './ChatList';
+import type { PendingCall } from './ToolGroup';
 import { DraggableBadge } from './DraggableBadge';
 import { FilesPanel } from './FileViewer';
 import { HistoryPanel } from './HistoryPanel';
@@ -56,9 +59,11 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
   const [input, setInput] = React.useState('');
   const [running, setRunning] = React.useState(false);
   const [reasoningTokens, setReasoningTokens] = React.useState(0);
-  // What the in-flight request is streaming: reply text, or a tool call
-  // (whose arguments, often a whole file, show nothing until it's done).
-  const [streaming, setStreaming] = React.useState<'text' | 'call' | null>(null);
+  // The tool call the in-flight request is writing, if any (its arguments,
+  // often a whole file, stream in before it runs).
+  const [pendingCall, setPendingCall] = React.useState<PendingCall | null>(null);
+  // No bytes from the model for a long while.
+  const [stalled, setStalled] = React.useState(false);
   const [ready, setReady] = React.useState(false);
   const [chatVisible, setChatVisible] = React.useState(false);
   // Desktop only: the chat sidebar can be hidden to give the app the window.
@@ -167,11 +172,11 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
 
   const handleEvent = React.useCallback((ev: AgentEvent) => {
     if (ev.type === 'text_delta') {
-      setStreaming('text');
       setEntries((prev) => {
         // blockIndex restarts at 0 every turn, so only match entries after the
-        // latest user message — otherwise new text appends to an old reply.
-        const turnStart = findLastIndex(prev, (e) => e.kind === 'user') + 1;
+        // latest user message or turn end (Continue starts a turn without a
+        // message) — otherwise new text appends to an old reply.
+        const turnStart = findLastIndex(prev, (e) => e.kind === 'user' || e.kind === 'turnEnd') + 1;
         const found = prev
           .slice(turnStart)
           .findIndex((e) => e.kind === 'assistant' && e.blockIndex === ev.blockIndex);
@@ -192,10 +197,14 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
           },
         ];
       });
-    } else if (ev.type === 'tool_call_start') {
-      setStreaming('call');
+    } else if (ev.type === 'tool_call_progress') {
+      setPendingCall({ name: ev.name, path: ev.path, chars: ev.chars });
+    } else if (ev.type === 'stall') {
+      setStalled(ev.stalled);
+    } else if (ev.type === 'paused') {
+      setEntries((prev) => [...prev, { kind: 'cutShort', id: `cut-${prev.length}`, reason: 'paused' }]);
     } else if (ev.type === 'tool_use') {
-      setStreaming(null);
+      setPendingCall(null);
       setEntries((prev) => [
         ...prev,
         {
@@ -236,7 +245,10 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
         return copy;
       });
     } else if (ev.type === 'reasoning') {
-      if (ev.tokens === 0) setStreaming(null);
+      if (ev.tokens === 0) {
+        setPendingCall(null);
+        setStalled(false);
+      }
       setReasoningTokens(ev.tokens);
     } else if (ev.type === 'error') {
       setEntries((prev) => [
@@ -246,11 +258,12 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
     }
   }, []);
 
+  // text null continues the last turn from its saved history (Retry, Continue).
   const doTurn = React.useCallback(
-    async (text: string): Promise<void> => {
+    async (text: string | null): Promise<void> => {
       setRunning(true);
       stoppedRef.current = false;
-      setEntries((prev) => [...prev, { kind: 'user', id: `u-${prev.length}`, text }]);
+      if (text !== null) setEntries((prev) => [...prev, { kind: 'user', id: `u-${prev.length}`, text }]);
       const projectAtStart = activeProjectRef.current;
       const priorHistory = historyRef.current;
       // Screenshot the result once the turn is over, if it changed any files.
@@ -259,13 +272,26 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
         wrote = true;
       });
       try {
-        const [model, autoAppIcons] = await Promise.all([getModel(), getAutoAppIcons()]);
+        const [model, autoAppIcons] = await Promise.all([
+          getModel(),
+          getAutoAppIcons(),
+          projectAtStart ? markTurnStarted(projectAtStart) : null,
+        ]);
         if (stoppedRef.current) throw new Error('Aborted');
         const run = runAgentTurn(
           { apiKey, model, sessionId: `blank-slate:${projectAtStart ?? 'default'}`, autoAppIcons },
           priorHistory,
           text,
-          handleEvent,
+          (ev) => {
+            // Saved as the turn goes, so closing the app mid-turn keeps the
+            // request and the tool rounds already done.
+            if (ev.type !== 'checkpoint') return handleEvent(ev);
+            if (projectAtStart !== activeProjectRef.current) return;
+            setEntries((prev) => {
+              persist(projectAtStart, ev.history, prev);
+              return prev;
+            });
+          },
         );
         runRef.current = run;
         const outcome = await run.result;
@@ -285,11 +311,14 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
         // Only a stop before the agent started lands here; there's nothing to
         // record but the request itself.
         if (stoppedRef.current && projectAtStart === activeProjectRef.current) {
-          const nextHistory: ChatMessage[] = [
-            ...priorHistory,
-            { role: 'user', content: text },
-            { role: 'assistant', content: '(Stopped by the user before finishing.)' },
-          ];
+          const nextHistory: ChatMessage[] =
+            text === null
+              ? priorHistory
+              : [
+                  ...priorHistory,
+                  { role: 'user', content: text },
+                  { role: 'assistant', content: '(Stopped by the user before finishing.)' },
+                ];
           historyRef.current = nextHistory;
           setEntries((prev) => {
             const next: Entry[] = [
@@ -301,13 +330,15 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
           });
         }
       } finally {
+        if (projectAtStart) markTurnEnded(projectAtStart).catch(() => {});
         unsubWrites();
         if (wrote && projectAtStart === activeProjectRef.current) {
           scheduleAutoCapture('after agent turn', 1200);
         }
         setRunning(false);
         setReasoningTokens(0);
-        setStreaming(null);
+        setPendingCall(null);
+        setStalled(false);
         runRef.current = null;
       }
     },
@@ -315,8 +346,8 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
   );
 
   const runTurn = React.useCallback(
-    async (text: string): Promise<void> => {
-      if (!text.trim() || turnRef.current) return;
+    async (text: string | null): Promise<void> => {
+      if ((text !== null && !text.trim()) || turnRef.current) return;
       const turn = doTurn(text);
       turnRef.current = turn;
       try {
@@ -352,10 +383,17 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
     await runTurn(text);
   };
 
-  const retry = React.useCallback(() => {
-    const lastUser = [...entries].reverse().find((e) => e.kind === 'user');
-    if (lastUser && !running) runTurn(lastUser.text);
-  }, [entries, running, runTurn]);
+  // Retry and Continue pick the last turn up from its saved history rather
+  // than sending the request again. While running this is the stall prompt's
+  // Retry: give up on the quiet request first.
+  const retry = React.useCallback(async () => {
+    if (running) {
+      const turn = turnRef.current;
+      runRef.current?.abort('stalled');
+      await turn;
+    }
+    runTurn(null);
+  }, [running, runTurn]);
 
   const fixRenderErrorNow = React.useCallback(() => {
     const err = renderErrorRef.current;
@@ -594,7 +632,9 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
             entries={entries}
             running={running}
             reasoningTokens={reasoningTokens}
-            streaming={streaming}
+            pendingCall={pendingCall}
+            stalled={stalled}
+            onStop={stop}
             memory={chatScrollRef}
             onRetry={retry}
             onSuggest={runTurn}
