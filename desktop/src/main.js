@@ -3,6 +3,7 @@ const path = require("node:path");
 const { app, BrowserWindow, shell } = require("electron");
 
 const { SCHEME, START_URL, registerScheme, serve } = require("./serve");
+const { attachMcpWindow, startMcp } = require("./mcp");
 const { registerSecureStore } = require("./secureStore");
 const { configureSession } = require("./session");
 const { loadBounds, trackBounds } = require("./windowState");
@@ -60,6 +61,7 @@ function createWindow() {
     });
 
     trackBounds(window);
+    attachMcpWindow(window);
 
     window.once("ready-to-show", () => window.show());
 
@@ -89,6 +91,7 @@ app.whenReady().then(() => {
     serve();
     registerSecureStore();
     configureSession();
+    startMcp().catch((e) => console.warn("[mcp] failed to start:", e));
     createWindow();
 
     app.on("activate", () => {

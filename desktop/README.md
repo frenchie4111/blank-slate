@@ -48,6 +48,25 @@ npm run dist           # signed + notarized DMG and zip for arm64 and x64
 - `npm start` runs as "Blank Slate Dev", with its own data folder and Keychain
   item, so it never shares secrets with a packaged build.
 
+## MCP server: coding agents build into Blank Slate
+
+`src/mcp.js` runs an MCP server (Streamable HTTP, JSON responses only) on
+`127.0.0.1:47821`, or the next free port, so Claude Code or any MCP client
+can build apps in the window while the user watches. Settings → Coding agents
+shows the `claude mcp add …` command to copy.
+
+- The port and a bearer token live in `mcp.json` in the data folder (0600).
+  Requests without the token get a 401. Requests with an `Origin` header get a
+  403, so a web page can't drive it.
+- `src/mcp.js` handles the protocol only. `tools/list` and `tools/call` go over
+  IPC to `src/mcp/host.ts` in the renderer, where the apps' files are. The
+  preload hands that channel out once, as it does the key store.
+- The tools are the in-app agent's own (files, images, name/icon, history, UI
+  tree), plus `get_app_guide` (the in-app agent's system prompt),
+  `list_apps`, `create_app`, `open_app`, and a `take_screenshot` that returns
+  the image. They act on the app open in the window. Calls run one at a time,
+  and switching apps from the UI waits for the current call to finish.
+
 ## Icon
 
 `assets/icon-mac.png` is the macOS icon: the same mark as `assets/icon.svg`, on

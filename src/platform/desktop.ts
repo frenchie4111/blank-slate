@@ -8,9 +8,24 @@ export type DesktopSecureStore = {
   delete(key: string): Promise<void>;
 };
 
+export type McpRequest = { id: number; method: string; params: Record<string, unknown> };
+
+export type McpConnectionInfo = { url: string; token: string; claudeCommand: string };
+
+// desktop/src/mcp.js forwards a coding agent's tool calls here (src/mcp/host.ts).
+export type DesktopMcpHost = {
+  onRequest(handler: (request: McpRequest) => void): void;
+  respond(id: number, payload: { result: unknown } | { error: string }): Promise<void>;
+  setReady(ready: boolean): Promise<void>;
+  // Null until the server is listening, or if it couldn't start.
+  info(): Promise<McpConnectionInfo | null>;
+};
+
 export type DesktopBridge = {
   // One-shot: the first call gets the key store, every later call gets null.
   claimSecureStore(): DesktopSecureStore | null;
+  // One-shot too. Missing on a desktop build older than the MCP server.
+  claimMcpHost?(): DesktopMcpHost | null;
 };
 
 declare global {
@@ -36,6 +51,13 @@ const unclaimable: DesktopSecureStore = {
 const secureStore: DesktopSecureStore | null = bridge
   ? (bridge.claimSecureStore?.() ?? unclaimable)
   : null;
+
+const mcpHost: DesktopMcpHost | null = bridge?.claimMcpHost?.() ?? null;
+
+/** The MCP server's renderer side, or null outside the desktop shell. */
+export function desktopMcpHost(): DesktopMcpHost | null {
+  return mcpHost;
+}
 
 /** The Electron key store, or null outside the desktop shell. */
 export function desktopSecureStore(): DesktopSecureStore | null {

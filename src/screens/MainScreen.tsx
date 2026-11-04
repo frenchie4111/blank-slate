@@ -33,6 +33,7 @@ import {
   type ServerToolEntry,
   type ToolEntry,
 } from '../project/chatStore';
+import { registerMcpHost, whenMcpIdle } from '../mcp/host';
 import * as projectStore from '../project/store';
 import type { Project } from '../project/store';
 import { isBundleUrl, readIncomingBundle, type PickedBundle } from '../share/io';
@@ -54,7 +55,8 @@ type Props = { apiKey: string; onResetKey: () => void };
 
 // chat: open the chat rather than the preview. draft: text to leave in the
 // composer, unsent.
-type EnterOpts = { chat?: boolean; draft?: string };
+// fromMcp: opened by a coding agent over MCP (src/mcp/host.ts).
+type EnterOpts = { chat?: boolean; draft?: string; fromMcp?: boolean };
 
 // The app is full bleed, raised over the dock: its corners on the dock's
 // side are rounded (close to an iPhone's own display corners) and it casts a
@@ -533,14 +535,19 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
   const enterApp = async (id: string, opts: EnterOpts = {}) => {
     const target = await projectStore.get(id);
     if (projectStore.needsTrustNotice(target)) {
-      setPendingTrust({ project: target!, opts });
+      // Accepting is the user's tap, not the MCP call (which has returned).
+      setPendingTrust({ project: target!, opts: { ...opts, fromMcp: false } });
       return;
     }
     if (id !== activeProjectRef.current) {
       await stopAndWait();
+      // An MCP call writes into the current app too. One coming from MCP is
+      // that call, so it can't wait for itself.
+      if (!opts.fromMcp) await whenMcpIdle();
       await projectStore.switchTo(id);
     }
-    const chat = opts.chat || (await isUntouched(id));
+    // A coding agent wants to see what it builds, even in a brand-new app.
+    const chat = !opts.fromMcp && (opts.chat || (await isUntouched(id)));
     setAppOpened(true);
     setAppsOpen(false);
     if (chat) setActiveTab('chat');
@@ -555,6 +562,17 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
     await projectStore.acknowledgeImport(pending.project.id);
     await enterApp(pending.project.id, pending.opts);
   };
+
+  // A coding agent building over MCP (desktop only) opens apps as a tap would.
+  const enterAppRef = React.useRef(enterApp);
+  enterAppRef.current = enterApp;
+  React.useEffect(() => {
+    if (!ready) return;
+    return registerMcpHost({
+      apiKey,
+      openApp: (id) => enterAppRef.current(id, { fromMcp: true }),
+    });
+  }, [ready, apiKey]);
 
   if (!ready) {
     return (

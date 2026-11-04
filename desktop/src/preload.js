@@ -23,10 +23,34 @@ let secureStore = {
  * including any from a generated app, gets null. A reload re-runs this
  * preload, and Blank Slate claims it again first thing.
  */
+/**
+ * The MCP host side of `src/mcp.js`: requests from a coding agent arrive here
+ * and Blank Slate answers them. One-shot like the key store, for the same
+ * reason: a generated app that could claim it could answer for Blank Slate.
+ */
+let mcpRequestHandler = null;
+ipcRenderer.on("mcp:request", (_event, request) => {
+    if (mcpRequestHandler) mcpRequestHandler(request);
+});
+
+let mcpHost = {
+    onRequest: (handler) => {
+        mcpRequestHandler = handler;
+    },
+    respond: (id, payload) => ipcRenderer.invoke("mcp:response", id, payload),
+    setReady: (ready) => ipcRenderer.invoke("mcp:ready", ready),
+    info: () => ipcRenderer.invoke("mcp:info"),
+};
+
 contextBridge.exposeInMainWorld("blankSlateDesktop", {
     claimSecureStore: () => {
         const claimed = secureStore;
         secureStore = null;
+        return claimed;
+    },
+    claimMcpHost: () => {
+        const claimed = mcpHost;
+        mcpHost = null;
         return claimed;
     },
 });

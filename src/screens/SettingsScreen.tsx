@@ -18,6 +18,7 @@ import { SettingSwitch } from '../components/SettingSwitch';
 import { getAutoAppIcons, getModel, setAutoAppIcons, setModel } from '../storage/keyStore';
 import { colors, fonts, radii, type } from '../theme';
 import { CONTENT_MAX_WIDTH, useWideLayout } from '../theme/layout';
+import { McpSettings } from './McpSettings';
 
 type Props = {
   onBack: () => void;
@@ -220,6 +221,8 @@ export function SettingsScreen({ onBack, onResetKey, apiKey }: Props) {
           The agent makes an icon for each new app (about $0.035 each). When off, it only
           makes one if you ask.
         </Text>
+
+        <McpSettings />
 
         <Section title="App">
           <Row label="Version" value={`${appVersion} (build ${buildNumber})`} />
