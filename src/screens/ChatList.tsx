@@ -554,9 +554,8 @@ const EntryView = React.memo(function EntryView({
         />
         <View style={styles.errorBody}>
           <Text style={styles.cutTitle}>
-            {paused ? 'Paused when you left Blank Slate' : 'Interrupted — Blank Slate was closed while this was running'}
+            {paused ? 'Paused when you left Blank Slate' : 'Interrupted, Blank Slate closed while this was running'}
           </Text>
-          <Text style={styles.cutText}>Nothing went wrong. Continue picks up where it stopped.</Text>
         </View>
         {onRetry ? (
           <Pressable
@@ -724,9 +723,7 @@ const styles = StyleSheet.create({
     borderColor: colors.line,
     backgroundColor: colors.board,
   },
-  cutTitle: { fontFamily: fonts.bodySemi, fontSize: 13, color: colors.chalk },
-  cutText: { fontFamily: fonts.body, fontSize: 13, lineHeight: 19, color: colors.dust },
-  stallCard: {
+  cutTitle: { fontFamily: fonts.bodySemi, fontSize: 13, color: colors.chalk },  stallCard: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,

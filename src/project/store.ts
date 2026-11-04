@@ -90,7 +90,7 @@ export default function App() {
       <Text style={styles.title}>Blank Slate</Text>
       <Text style={styles.body}>
         Tap the Blank Slate logo in the dock below to chat with the agent
-        about what this app should become. Your other apps sit beside it.
+        about what this app should become.
       </Text>
     </View>
   );

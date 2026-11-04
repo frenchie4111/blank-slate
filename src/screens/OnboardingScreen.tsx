@@ -14,7 +14,6 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { setApiKey } from '../storage/keyStore';
 import { colors, fonts, radii, type } from '../theme';
-import { runtimePlatform } from '../platform/desktop';
 import { useWideLayout } from '../theme/layout';
 import { LogoMark } from '../theme/LogoMark';
 
@@ -64,11 +63,6 @@ export function OnboardingScreen({ onDone }: Props) {
             <LogoMark size={30} />
           </View>
           <Text style={styles.title}>Build any app,{'\n'}right here.</Text>
-          <Text style={styles.subtitle}>
-            Describe what you want. Blank Slate writes the code on your{' '}
-            {runtimePlatform() === 'desktop' ? 'computer' : 'phone'} and runs it the moment it's
-            ready.
-          </Text>
         </View>
 
         <View style={styles.field}>
@@ -146,7 +140,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   title: { ...type.display, color: colors.chalk },
-  subtitle: { fontFamily: fonts.body, fontSize: 16, lineHeight: 24, color: colors.chalkMuted },
   field: { gap: 10 },
   label: { ...type.labelStrong, color: colors.chalk },
   input: {
