@@ -34,6 +34,7 @@ import { BundleError, importBundle } from '../share/bundle';
 import { pickBundle, readWebFile, ShareUnavailableError, type PickedBundle } from '../share/io';
 import { ShareSheet } from '../share/ShareSheet';
 import { useWideLayout } from '../theme/layout';
+import { useKeyboardShown } from './useKeyboardShown';
 
 type Props = {
   projects: Project[];
@@ -639,6 +640,8 @@ function AppSheet({
 }) {
   const insets = useSafeAreaInsets();
   const wide = useWideLayout();
+  const keyboardRef = React.useRef(null);
+  const keyboard = useKeyboardShown(!!draft, keyboardRef);
   const [name, setName] = React.useState('');
   const [tint, setTint] = React.useState<Tint>('yellow');
   const [glyph, setGlyph] = React.useState<Glyph | null>(null);
@@ -704,7 +707,8 @@ function AppSheet({
         <View
           style={[
             styles.sheet,
-            { paddingBottom: Math.max(insets.bottom, 16) + 8 },
+            // The home indicator sits under the keyboard while it's up.
+            { paddingBottom: (keyboard.shown ? 16 : Math.max(insets.bottom, 16)) + 8 },
             wide && styles.sheetWide,
           ]}
         >
