@@ -1,0 +1,82 @@
+name: Smoke test the macOS signing chain
+
+# Signing can only really be tested on a runner. A developer Mac has the
+# certificate in its login keychain, so the parts that break in CI (the
+# temporary keychain electron-builder creates from MAC_CSC_LINK, and whether
+# codesign can find the identity in it) can't fail locally. Grow spent two
+# release versions on exactly that before it had a workflow like this.
+#
+# The runner image is an input because it mattered there: the keychain bug
+# fixed in electron-builder 26.16.1 only shows up on macOS 15 and newer.
+#
+# Runs the same build as a release, notarization included, but with
+# `--publish never`, so a failure costs a runner and not a version number.
+# Run it from the Actions tab on any branch.
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: "Runner image to test against"
+        type: choice
+        default: macos-latest
+        options:
+          - macos-latest
+          - macos-26
+          - macos-15
+          - macos-14
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ${{ inputs.runner }}
+
+    defaults:
+      run:
+        working-directory: desktop
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            desktop/package-lock.json
+
+      # Built here, not taken from an artifact: this workflow stands alone and
+      # has no release run to borrow a renderer from.
+      - name: Install app dependencies
+        working-directory: .
+        run: npm ci
+      - name: Install desktop dependencies
+        run: npm ci
+      - name: Export the web build
+        run: npm run renderer
+
+      # arm64 DMG only. Both architectures sign and notarize through the same
+      # code, so building x64 as well would double the cost to prove nothing new.
+      # `dmg:arm64` on the command line replaces the arch lists in
+      # `mac.target`; plain `--arm64` doesn't.
+      - name: Build, sign and notarize
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+        run: node scripts/build.mjs --mac dmg:arm64 --publish never
+
+      # This step decides whether the run passed. electron-builder exits 0 even
+      # when it skipped signing or notarization.
+      - name: Verify signing, notarization and stapling (app and DMG)
+        run: scripts/verify-mac.sh
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: blank-slate-mac-arm64-${{ inputs.runner }}
+          path: desktop/release/*.dmg
+          retention-days: 3

@@ -82,20 +82,48 @@ ID-signed build keeps the same identity across rebuilds, so answering the first
 prompt with **Always Allow** sticks. An ad-hoc build (`pack:unsigned`) is a new
 identity every time, so it asks again after every rebuild.
 
-`npm run dist` signs with "Michael Lyons (M7Y6TPCQ63)" from the keychain and
-notarizes when `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD` and `APPLE_TEAM_ID`
-are set — copy `.env.example` to `.env`. Without them notarization is skipped
-silently and Gatekeeper will reject the build on other Macs.
+`npm run dist` signs the apps and DMGs with "Michael Lyons (M7Y6TPCQ63)" from
+the keychain. When `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD` and
+`APPLE_TEAM_ID` are set (copy `.env.example` to `.env`), it also notarizes and
+staples both the apps and the DMGs. Without those variables, notarization is
+skipped with only a log line and Gatekeeper rejects the build on other Macs.
+`scripts/verify-mac.sh` catches that.
 
 `--no-notarize` (what `pack` uses) signs with the Developer ID but skips
 notarization. `--no-sign` (what `pack:unsigned` uses) signs ad-hoc and skips
 notarization; the app runs on this Mac only. For an unsigned DMG: `npm run renderer && node scripts/build.mjs --no-sign`.
 
-## Auto-update: not set up
+## Auto-update
 
-There is no S3 bucket yet, so there is no `update.js`, no `publish` config and
-no `release` script. To add it, copy Grow's `desktop/src/update.js` (and its
-`electron-updater` dependency, `build.publish` block and `release` script),
-call `startUpdates()` after `createWindow()` in `main.js`, and point
-`build.publish` at the bucket. Updates only install over a Developer ID-signed
-build.
+`src/update.js` uses `electron-updater` with the `github` provider
+(`build.publish` in `package.json`). A packaged build checks on launch and
+every six hours, downloads in the background, and shows a native dialog
+offering to restart when the update is ready. Choosing Later installs it on
+the next quit. "Check for Updates…" is in the app menu on macOS and in Help on
+Windows. The UI is all native, so the updater adds nothing to the preload
+bridge, which still exposes only the one-shot `claimSecureStore()` and
+`claimMcpHost()`. Unpackaged runs (`npm start`) don't check.
+
+The feed is the newest **published** GitHub Release: `latest-mac.yml` (which
+points at the zips) and `latest.yml` (the Windows installer), uploaded by
+`.github/workflows/desktop.yml`. Drafts are invisible to the updater, so the
+release workflow uploads into a draft and publishes only once both platforms
+are in. See "Releasing" in the root README.
+
+- Updates install only over a Developer ID-signed build: Squirrel.Mac checks
+  that the new app has the same signature. A `pack:unsigned` build downloads
+  an update and then refuses to install it.
+- **v1.1.0 has no updater.** Anyone on 1.1.0 has to download 1.2.0 from the
+  Releases page once. Updates are automatic from then on.
+- The DMG isn't part of the feed (`dmg.writeUpdateInfo: false`). It is
+  notarized and stapled after electron-builder hashes it
+  (`scripts/notarize-dmg.js`), and the updater installs from the zip anyway.
+
+## Releases
+
+Releases are built by CI from a `vX.Y.Z` tag. Asset names match v1.1.0:
+`BlankSlate-<version>-mac-arm64.dmg`, `-mac-x64.dmg`, the matching `.zip`s,
+and `BlankSlate-<version>-win-x64.exe`, plus `SHA256SUMS.txt`.
+`scripts/verify-mac.sh` checks that every app and DMG in `release/` is
+signed, notarized and stapled. CI runs it, and it works locally after
+`npm run dist` too.

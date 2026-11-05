@@ -1,0 +1,291 @@
+name: Test & Release desktop
+
+# Modelled on Grow's desktop.yml, but publishes to GitHub Releases, not S3.
+#
+# Every push that touches the desktop app or the web build it wraps exports
+# the renderer, as a cheap check. A version tag also builds, signs and
+# notarizes the installers and publishes them as the GitHub Release that
+# `electron-updater` reads.
+#
+#   renderer  ubuntu: tag/version check, then one web export shared by both
+#             platforms
+#   prepare   ubuntu: create the draft release for the tag, once, before the
+#             matrix starts
+#   release   macOS + Windows: build and upload into that draft
+#   publish   ubuntu: check every asset arrived, add SHA256SUMS.txt, publish
+on:
+  push:
+    # Branch pushes are path-filtered. Tag pushes can't be: GitHub doesn't
+    # evaluate path filters for tags, so every matching tag runs this. That is
+    # intended, because the tag is the instruction to ship. It shares the tag
+    # with `app.yml`, so one tag ships the OTA update and the installers
+    # together.
+    branches:
+      - "**"
+    tags:
+      # Releases only: vX.Y.Z. `+` repeats the preceding class in GitHub's
+      # filter syntax, so this rejects `vendor-bump` and `v1.3.0-rc.1` alike.
+      - "v[0-9]+.[0-9]+.[0-9]+"
+    paths:
+      - "desktop/**"
+      - "src/**"
+      - "assets/**"
+      - "App.tsx"
+      - "index.ts"
+      - "app.json"
+      - "package.json"
+      - "package-lock.json"
+      - "metro.config.js"
+      - ".nvmrc"
+      - ".github/workflows/desktop.yml"
+  # A release can die partway through, for example with Windows uploaded and
+  # macOS failing notarization. Dispatching this against the tag retries the
+  # whole release without moving a tag someone may already have fetched.
+  # ("Re-run failed jobs" on the original run also works, and only redoes the
+  # failed leg.) Dispatched against a branch, it only exports the renderer:
+  # the release jobs read the version from app.json and would otherwise
+  # publish a branch build under that version's tag.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  renderer:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: package-lock.json
+      # The build takes its version from app.json and never looks at the tag,
+      # and electron-builder uploads to `v<that version>`. A `v1.2.0` tag on a
+      # commit that still says 1.1.0 would add 1.1.0 installers to the old
+      # release. Checked here, before the costly half runs.
+      - name: Check the tag matches the app version
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          # Passed through the environment, not inline: a tag name is arbitrary
+          # text and would otherwise reach the shell as syntax.
+          TAG: ${{ github.ref_name }}
+        run: scripts/check-release-tag.sh
+      # The export runs from the repo root, so that's the tree to install.
+      # `desktop/` plays no part in producing the renderer.
+      - name: Install dependencies
+        run: npm ci
+      - name: Export the web build
+        working-directory: desktop
+        run: npm run renderer
+      # Exported once and handed to both platforms, not rebuilt on each. Both
+      # installers then wrap identical bytes, and the macOS runner (the
+      # expensive one) skips the root `npm ci`.
+      - uses: actions/upload-artifact@v7
+        with:
+          name: renderer
+          path: desktop/renderer
+          retention-days: 1
+
+  # electron-builder creates the release itself if it can't find one. Left to
+  # the matrix, both legs would look, find nothing, and each create a draft:
+  # GitHub allows several drafts with the same tag, so the assets would be
+  # split between two releases. One job creates the draft first, and both legs
+  # then find it and upload into it.
+  prepare:
+    needs: renderer
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    # Two runs for the same tag (a push and a dispatched retry) must not both
+    # decide the draft is missing.
+    concurrency: blank-slate-desktop-prepare-${{ github.ref_name }}
+
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.ref_name }}
+
+    steps:
+      - name: Create the draft release, or find the one a failed run left
+        run: |
+          if state=$(gh release view "$TAG" --json isDraft --jq .isDraft 2>err.txt); then
+            if [ "$state" = "true" ]; then
+              echo "Draft release for $TAG exists; uploading into it again."
+              exit 0
+            fi
+            # electron-builder would log "skipped publishing" and exit 0 here,
+            # so the run would go green having uploaded nothing.
+            echo "::error::$TAG is already published. To rebuild it, mark it as a draft again (gh release edit $TAG --draft) and re-run."
+            exit 1
+          fi
+
+          if ! grep -q "release not found" err.txt; then
+            cat err.txt >&2
+            exit 1
+          fi
+
+          version="${TAG#v}"
+
+          # Release notes come from the tag's annotation (`git tag -a vX.Y.Z -F
+          # notes.md`) when there is one. Otherwise GitHub generates them from
+          # the merged PRs. They can be edited after publishing either way.
+          ref=$(gh api "repos/$GH_REPO/git/ref/tags/$TAG")
+          if [ "$(jq -r .object.type <<<"$ref")" = "tag" ]; then
+            gh api "repos/$GH_REPO/git/tags/$(jq -r .object.sha <<<"$ref")" --jq .message > notes.md
+            notes=(--notes-file notes.md)
+          else
+            notes=(--generate-notes)
+          fi
+
+          gh release create "$TAG" --draft --verify-tag --title "Blank Slate $version" "${notes[@]}"
+
+  release:
+    needs: prepare
+
+    strategy:
+      # Windows needs no secrets and macOS needs five, so failures usually hit
+      # one platform at a time. Letting the other leg finish means a retry only
+      # has to fix the broken one. Nothing is public until `publish`, which
+      # needs both legs.
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+
+    runs-on: ${{ matrix.os }}
+
+    permissions:
+      contents: write
+
+    # Per tag and platform. Only two runs of the same tag (a push and a retry)
+    # queue behind each other, and they write to the same draft. Different
+    # tags run independently, so a newer queued run can't silently cancel an
+    # older tag's pending one.
+    concurrency: blank-slate-desktop-release-${{ github.ref_name }}-${{ matrix.os }}
+
+    defaults:
+      run:
+        working-directory: desktop
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - uses: actions/download-artifact@v8
+        with:
+          name: renderer
+          path: desktop/renderer
+
+      # Signing env is set on this step only, not on the job. CSC_LINK isn't
+      # mac-only: electron-builder reads it on Windows too and would try to
+      # sign the installer with a Developer ID certificate that can't sign one.
+      #
+      # Needs electron-builder >= 26.16.1, which desktop/package.json requires.
+      # Before that, the temporary keychain was created with a random password
+      # and unlocked with the certificate's, which macOS 15+ runners reject
+      # ("SecKeychainUnlock: the user name or passphrase you entered is not
+      # correct").
+      #
+      # Notarizes the app (electron-builder) and each DMG (the
+      # artifactBuildCompleted hook, scripts/notarize-dmg.js) before uploading.
+      - name: Build, notarize and upload
+        if: runner.os == 'macOS'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # build.mjs directly, not `npm run dist`, which would re-export the
+        # renderer over the one just downloaded.
+        run: node scripts/build.mjs --publish always
+
+      # The draft is the safety net: if this fails, `publish` doesn't run and
+      # users never see what was uploaded.
+      - name: Verify signing, notarization and stapling
+        if: runner.os == 'macOS'
+        run: scripts/verify-mac.sh
+
+      # Unsigned, like Grow. Auto-update still works: electron-updater only
+      # checks the Windows signature when `publisherName` is set, and an
+      # unsigned build doesn't set it. The cost is SmartScreen warnings until
+      # the download earns reputation.
+      - name: Build and upload
+        if: runner.os == 'Windows'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/build.mjs --publish always
+
+  # Publishes only once both platforms are in. electron-updater ignores drafts,
+  # so until this runs no installed app sees the release. A release published
+  # while latest-mac.yml was uploaded but its zip wasn't would send every Mac a
+  # 404.
+  publish:
+    needs: release
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.ref_name }}
+
+    steps:
+      - name: Check every asset arrived
+        run: |
+          version="${TAG#v}"
+          expected=(
+            "BlankSlate-$version-mac-arm64.dmg"
+            "BlankSlate-$version-mac-x64.dmg"
+            "BlankSlate-$version-mac-arm64.zip"
+            "BlankSlate-$version-mac-x64.zip"
+            "BlankSlate-$version-win-x64.exe"
+            "latest-mac.yml"
+            "latest.yml"
+          )
+          assets=$(gh release view "$TAG" --json assets --jq '.assets[].name')
+          missing=0
+          for name in "${expected[@]}"; do
+            if ! grep -qxF "$name" <<<"$assets"; then
+              echo "::error::$name is missing from the $TAG draft."
+              missing=1
+            fi
+          done
+          exit $missing
+      # Computed from the uploaded assets, not from files on the build
+      # runners, so the sums describe exactly what people download. Installers
+      # only, like v1.1.0.
+      - name: Add SHA256SUMS.txt
+        run: |
+          mkdir assets && cd assets
+          gh release download "$TAG" --pattern 'BlankSlate-*.dmg' --pattern 'BlankSlate-*.zip' --pattern 'BlankSlate-*.exe'
+          sha256sum BlankSlate-* | tee ../SHA256SUMS.txt
+          cd .. && gh release upload "$TAG" SHA256SUMS.txt --clobber
+      # Latest only if this is the highest version published. electron-updater
+      # resolves updates through /releases/latest, so the Latest flag *is* the
+      # update feed. A backport (v1.1.1 after v1.2.0) marked Latest would stop
+      # 1.2.x installs seeing 1.2.x updates until the next release. Leaving
+      # the flag off doesn't help: GitHub marks a newly published release
+      # Latest by default.
+      - name: Publish the release
+        run: |
+          highest=$(gh release list --exclude-drafts --exclude-pre-releases --limit 100 --json tagName --jq '.[].tagName' \
+            | { cat; echo "$TAG"; } | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+          if [ "$highest" = "$TAG" ]; then latest=true; else latest=false; fi
+          echo "Highest published version: $highest; marking $TAG Latest: $latest"
+          gh release edit "$TAG" --draft=false --latest="$latest"

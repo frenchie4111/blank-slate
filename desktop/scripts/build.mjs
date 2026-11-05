@@ -43,6 +43,23 @@ if (!unsigned && existsSync(envFile)) process.loadEnvFile(envFile);
 
 const env = { ...process.env };
 
+/**
+ * Catch a malformed app-specific password before spending minutes on signing.
+ * Apple issues them as four groups of four lowercase letters. A value pasted
+ * with its `.env` quotes still attached (Node strips them, `gh secret set`
+ * doesn't) otherwise only fails as a 401 from notarytool, after the build.
+ */
+const password = env.APPLE_APP_SPECIFIC_PASSWORD;
+
+if (!unnotarized && password && !/^[a-z]{4}(-[a-z]{4}){3}$/.test(password)) {
+    console.error(
+        `APPLE_APP_SPECIFIC_PASSWORD doesn't look like an app-specific password (xxxx-xxxx-xxxx-xxxx; ` +
+            `got ${password.length} characters${/^["']|["']$/.test(password) ? ", wrapped in quotes" : ""}). ` +
+            "Check for stray quotes or whitespace.",
+    );
+    process.exit(1);
+}
+
 if (unsigned) {
     env.CSC_IDENTITY_AUTO_DISCOVERY = "false";
     for (const name of ["CSC_LINK", "CSC_KEY_PASSWORD", "APPLE_ID", "APPLE_APP_SPECIFIC_PASSWORD", "APPLE_TEAM_ID"]) {
