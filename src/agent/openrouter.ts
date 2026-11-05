@@ -34,8 +34,9 @@ export type ContentPart =
   | { type: 'image_url'; image_url: { url: string } };
 
 export type ChatMessage =
-  // Array content only ever carries a screenshot within a single turn; the
-  // agent swaps it back to text before history is saved.
+  // Array content only ever carries images within a single turn (a
+  // screenshot, or images attached to the request); the agent swaps it back
+  // to text before history is saved.
   | { role: 'user'; content: string | ContentPart[] }
   | {
       role: 'assistant';

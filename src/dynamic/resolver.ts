@@ -71,6 +71,14 @@ function joinRelative(fromPath: string, spec: string): string {
 
 const CANDIDATE_EXTS = ['', '.tsx', '.ts', '.jsx', '.js'];
 const INDEX_CANDIDATES = ['/index.tsx', '/index.ts', '/index.jsx', '/index.js'];
+// Imported as a string rather than compiled.
+const DATA_EXTS = new Set(['.txt', '.md', '.csv', '.svg', '.html', '.css', '.xml', '.yml', '.yaml']);
+
+function extOf(path: string): string {
+  const slash = path.lastIndexOf('/');
+  const dot = path.lastIndexOf('.');
+  return dot > slash ? path.slice(dot).toLowerCase() : '';
+}
 
 async function resolveRelative(fromPath: string, spec: string): Promise<string | null> {
   const joined = joinRelative(fromPath, spec);
@@ -128,6 +136,18 @@ async function compileFile(
     }
     return { uri: content };
   }
+
+  // Data files (often ones the user uploaded) import as their contents:
+  // `import rows from './uploads/data.csv'` is the text, a .json is parsed.
+  const ext = extOf(path);
+  if (ext === '.json') {
+    try {
+      return JSON.parse(content) as Exports;
+    } catch (e) {
+      fail('execute', path, `${path} is not valid JSON: ${(e as Error).message}`);
+    }
+  }
+  if (DATA_EXTS.has(ext)) return content as unknown as Exports;
 
   sources.push(content);
   const hash = hashContent(content);

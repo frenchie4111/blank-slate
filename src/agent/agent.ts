@@ -106,15 +106,26 @@ export type AgentRun = {
 };
 
 // userText null continues the last turn instead (Retry, Continue): its
-// request and any finished tool rounds are already in prior.
+// request and any finished tool rounds are already in prior. images are
+// parts the user attached (src/chat/uploads.ts), sent after userText for this
+// turn only; userText must say what they are, since history keeps only it.
 export function runAgentTurn(
   config: AgentConfig,
   prior: ChatMessage[],
   userText: string | null,
   onEvent: (ev: AgentEvent) => void,
+  images: ContentPart[] = [],
 ): AgentRun {
   const messages: ChatMessage[] =
-    userText === null ? resumable(prior) : [...prior, { role: 'user', content: userText }];
+    userText === null
+      ? resumable(prior)
+      : [
+          ...prior,
+          { role: 'user', content: images.length ? [{ type: 'text', text: userText }, ...images] : userText },
+        ];
+  // The request's own images stay for the whole turn; only screenshots are
+  // dropped as more arrive.
+  const requestAt = userText === null ? -1 : prior.length;
   const startedAt = Date.now();
   const systemMessage = systemMessageFor(config.autoAppIcons, config.vibe);
   const controller = new AbortController();
@@ -122,13 +133,13 @@ export function runAgentTurn(
 
   const finish = (status: TurnStatus, note?: string): TurnOutcome => {
     closeTurn(messages, note);
-    return { history: withoutImages(messages), status };
+    return { history: withoutImages(messages, requestAt), status };
   };
 
   const checkpoint = () => {
     const copy = messages.slice();
     closeTurn(copy, INTERRUPTED_NOTE);
-    onEvent({ type: 'checkpoint', history: withoutImages(copy) });
+    onEvent({ type: 'checkpoint', history: withoutImages(copy, requestAt) });
   };
 
   const result = (async (): Promise<TurnOutcome> => {
@@ -274,7 +285,7 @@ export function runAgentTurn(
               { type: 'image_url', image_url: { url: img.dataUrl } },
             ]),
           });
-          dropOldImages(messages, MAX_LIVE_IMAGES);
+          dropOldImages(messages, MAX_LIVE_IMAGES, requestAt);
         }
 
         onEvent({ type: 'iteration_end' });
@@ -393,9 +404,11 @@ function imageCount(m: ChatMessage): number {
 // Screenshot messages are removed outright rather than left as a text stub:
 // a user-role line the user never typed reads to the model as injected text.
 // The tool results that pointed at the image say it's gone instead.
-function dropOldImages(messages: ChatMessage[], keep: number): void {
+// The user's request (at requestAt) is never removed or counted.
+function dropOldImages(messages: ChatMessage[], keep: number, requestAt: number): void {
   let seen = 0;
   for (let i = messages.length - 1; i >= 0; i--) {
+    if (i === requestAt) continue;
     const n = imageCount(messages[i]);
     if (!n) continue;
     seen += n;
@@ -413,10 +426,17 @@ function dropOldImages(messages: ChatMessage[], keep: number): void {
 
 // Saved history never holds image data: it would bloat storage and be resent
 // (and billed) on every later turn. The agent can fetch a screenshot again
-// with get_screenshot.
-function withoutImages(messages: ChatMessage[]): ChatMessage[] {
+// with get_screenshot, and an attached image with view_image: the request
+// keeps its text, which names each file's path.
+function withoutImages(messages: ChatMessage[], requestAt: number): ChatMessage[] {
   const copy = messages.slice();
-  dropOldImages(copy, 0);
+  // Screenshots all come after the request, so dropping them leaves its index.
+  dropOldImages(copy, 0, requestAt);
+  const request = copy[requestAt];
+  if (request?.role === 'user' && Array.isArray(request.content)) {
+    const first = request.content[0];
+    copy[requestAt] = { role: 'user', content: first?.type === 'text' ? first.text : '' };
+  }
   return copy;
 }
 
