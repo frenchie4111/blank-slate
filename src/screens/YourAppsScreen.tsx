@@ -35,6 +35,7 @@ import { BundleError, importBundle } from '../share/bundle';
 import { pickBundle, readWebFile, ShareUnavailableError, type PickedBundle } from '../share/io';
 import { ShareSheet } from '../share/ShareSheet';
 import { useWideLayout } from '../theme/layout';
+import { errorMessage, InlineError } from './announce';
 import { useKeyboardShown } from './useKeyboardShown';
 
 type Props = {
@@ -111,6 +112,8 @@ export function AppActionsProvider({
   const [draft, setDraft] = React.useState<Draft | null>(null);
   const [pendingDelete, setPendingDelete] = React.useState<Project | null>(null);
   const [busy, setBusy] = React.useState(false);
+  // Shown inside the delete / stop dialog when its action fails; the dialog stays open.
+  const [actionError, setActionError] = React.useState<string | null>(null);
   // Leaving the current app mid-build asks first, then stops the build.
   const [pendingStop, setPendingStop] = React.useState<(() => void) | null>(null);
   // Long-pressed tile: its context menu is open.
@@ -129,13 +132,27 @@ export function AppActionsProvider({
     const action = pendingStop;
     if (!action || busy) return;
     setBusy(true);
+    setActionError(null);
     try {
       await onStopBuild();
+    } catch (e) {
+      setActionError(`Couldn't stop the build. ${errorMessage(e)}`);
+      return;
     } finally {
       setBusy(false);
-      setPendingStop(null);
     }
+    setPendingStop(null);
     action();
+  };
+
+  const closeStop = () => {
+    setPendingStop(null);
+    setActionError(null);
+  };
+
+  const closeDelete = () => {
+    setPendingDelete(null);
+    setActionError(null);
   };
 
   const open = (p: Project) => {
@@ -170,14 +187,21 @@ export function AppActionsProvider({
   const confirmDelete = async () => {
     if (!pendingDelete || busy) return;
     setBusy(true);
+    setActionError(null);
     try {
       if (pendingDelete.id === currentId) await onStopBuild();
       await projectStore.remove(pendingDelete.id);
-      await debugHistory.removeProject(pendingDelete.id);
-    } finally {
+    } catch (e) {
+      setActionError(`Couldn't delete ${pendingDelete.name}. ${errorMessage(e)}`);
       setBusy(false);
-      setPendingDelete(null);
+      return;
     }
+    // The app is gone at this point; leftover history is only a cleanup miss.
+    await debugHistory.removeProject(pendingDelete.id).catch((e) => {
+      console.warn('[apps] failed to clear history for deleted app', e);
+    });
+    setBusy(false);
+    setPendingDelete(null);
   };
 
   const actions: AppActions = {
@@ -218,7 +242,7 @@ export function AppActionsProvider({
         transparent
         visible={!!pendingDelete}
         animationType="fade"
-        onRequestClose={() => setPendingDelete(null)}
+        onRequestClose={closeDelete}
       >
         <View style={styles.backdrop}>
           <View style={styles.dialog}>
@@ -227,10 +251,11 @@ export function AppActionsProvider({
               Its code and chat are removed from this phone. This can't be undone.
               {deletingCurrentBuild ? ' The build running in it will be stopped.' : ''}
             </Text>
+            <InlineError message={actionError} />
             <View style={styles.dialogActions}>
               <Pressable
                 style={({ pressed }) => [styles.btn, styles.btnSecondary, pressed && styles.pressed]}
-                onPress={() => setPendingDelete(null)}
+                onPress={closeDelete}
                 disabled={busy}
               >
                 <Text style={styles.btnSecondaryText}>Cancel</Text>
@@ -259,7 +284,7 @@ export function AppActionsProvider({
         transparent
         visible={!!pendingStop}
         animationType="fade"
-        onRequestClose={() => setPendingStop(null)}
+        onRequestClose={closeStop}
       >
         <View style={styles.backdrop}>
           <View style={styles.dialog}>
@@ -269,10 +294,11 @@ export function AppActionsProvider({
               <Text style={styles.dialogBodyStrong}>{current?.name ?? 'this app'}</Text> is still
               working. Switching apps will stop it
             </Text>
+            <InlineError message={actionError} />
             <View style={styles.dialogActions}>
               <Pressable
                 style={({ pressed }) => [styles.btn, styles.btnSecondary, pressed && styles.pressed]}
-                onPress={() => setPendingStop(null)}
+                onPress={closeStop}
                 disabled={busy}
               >
                 <Text style={styles.btnSecondaryText}>Keep building</Text>
@@ -665,9 +691,11 @@ function AppSheet({
   const [glyph, setGlyph] = React.useState<Glyph | null>(null);
   const [vibe, setVibe] = React.useState(VIBES[0]);
   const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
 
   React.useEffect(() => {
     if (!draft) return;
+    setError(null);
     if (draft.mode === 'create') {
       setName('');
       setTint(defaultTint(String(Date.now())));
@@ -702,6 +730,10 @@ function AppSheet({
         await projectStore.setAppearance(draft.project.id, { tint, glyph: shownGlyph });
         onClose();
       }
+    } catch (e) {
+      const what =
+        draft.mode === 'create' ? 'create the app' : draft.mode === 'style' ? 'save the style' : 'save changes';
+      setError(`Couldn't ${what}. ${errorMessage(e)}`);
     } finally {
       setBusy(false);
     }
@@ -827,6 +859,8 @@ function AppSheet({
               <Text style={styles.sheetNote}>Creating an app stops the build that's running.</Text>
             ) : null}
           </ScrollView>
+
+          <InlineError message={error} />
 
           <View style={styles.dialogActions}>
             <Pressable

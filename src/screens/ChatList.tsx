@@ -18,6 +18,7 @@ import {
 import type { Entry, EntryAttachment, ServerToolEntry, ToolEntry } from '../project/chatStore';
 import { colors, fonts, radii, space } from '../theme';
 import { readFile, subscribe } from '../vfs/vfs';
+import { liveAlert, liveStatus, useAnnounce, useScreenReader } from './announce';
 import { Markdown } from './Markdown';
 import { buildRenderItems, ToolGroupCard, type PendingCall, type RenderItem } from './ToolGroup';
 
@@ -94,6 +95,9 @@ export function ChatList({
   );
   const last = items[items.length - 1];
   const idleSince = useIdleSince(running, entries, pendingCall);
+  // Checked once here rather than in every reply, which would mean one
+  // listener per message in a long chat.
+  const screenReader = useScreenReader();
   // A live tool group always shows what's happening (a pending call being
   // written, a tool running, or "Thinking…" between requests). Otherwise a
   // status row covers the request's first moments, and any quiet spell after
@@ -303,77 +307,86 @@ export function ChatList({
   };
 
   return (
-    <View style={styles.wrap}>
-      <ScrollView
-        ref={scrollRef}
-        style={styles.scroll}
-        contentContainerStyle={styles.messages}
-        keyboardShouldPersistTaps="handled"
-        scrollEventThrottle={16}
-        onScroll={onScroll}
-        onScrollBeginDrag={() => {
-          draggingRef.current = true;
-        }}
-        onScrollEndDrag={() => {
-          draggingRef.current = false;
-          settle();
-        }}
-        onMomentumScrollBegin={() => {
-          momentumRef.current = true;
-        }}
-        onMomentumScrollEnd={() => {
-          momentumRef.current = false;
-          settle();
-        }}
-        onContentSizeChange={onContentSizeChange}
-        onLayout={pin}
-      >
-        {items.length === 0 ? (
-          <View style={styles.empty}>
-            <Text style={styles.emptyTitle}>What should this app become?</Text>
-            <Text style={styles.emptyBody}>Describe it below, or start from one of these.</Text>
-            <View style={styles.starters}>
-              {STARTERS.map((s) => (
-                <Pressable
-                  key={s}
-                  onPress={() => onSuggest(s)}
-                  style={({ pressed }) => [styles.starter, pressed && styles.starterPressed]}
-                  accessibilityRole="button"
-                >
-                  <Text style={styles.starterText}>{s}</Text>
-                  <Ionicons name="arrow-up" size={15} color={colors.dust} />
-                </Pressable>
-              ))}
+    <ScreenReaderContext.Provider value={screenReader}>
+      <View style={styles.wrap}>
+        <ScrollView
+          ref={scrollRef}
+          style={styles.scroll}
+          contentContainerStyle={styles.messages}
+          keyboardShouldPersistTaps="handled"
+          scrollEventThrottle={16}
+          onScroll={onScroll}
+          onScrollBeginDrag={() => {
+            draggingRef.current = true;
+          }}
+          onScrollEndDrag={() => {
+            draggingRef.current = false;
+            settle();
+          }}
+          onMomentumScrollBegin={() => {
+            momentumRef.current = true;
+          }}
+          onMomentumScrollEnd={() => {
+            momentumRef.current = false;
+            settle();
+          }}
+          onContentSizeChange={onContentSizeChange}
+          onLayout={pin}
+        >
+          {items.length === 0 ? (
+            <View style={styles.empty}>
+              <Text style={styles.emptyTitle}>What should this app become?</Text>
+              <Text style={styles.emptyBody}>Describe it below, or start from one of these.</Text>
+              <View style={styles.starters}>
+                {STARTERS.map((s) => (
+                  <Pressable
+                    key={s}
+                    onPress={() => onSuggest(s)}
+                    style={({ pressed }) => [styles.starter, pressed && styles.starterPressed]}
+                    accessibilityRole="button"
+                  >
+                    <Text style={styles.starterText}>{s}</Text>
+                    <Ionicons name="arrow-up" size={15} color={colors.dust} />
+                  </Pressable>
+                ))}
+              </View>
             </View>
-          </View>
-        ) : (
-          items.map((item) => (
-            <ItemView
-              key={item.id}
-              item={item}
-              onRetry={item.id === retryId ? onRetry : undefined}
-            />
-          ))
-        )}
-        {running && stalled ? (
-          <StallRow onStop={onStop} onRetry={onRetry} />
-        ) : status ? (
-          <View style={styles.thinking}>
-            <ActivityIndicator size="small" color={colors.dust} />
-            <Text style={styles.thinkingText}>
-              {status === 'working' && idleSince !== null ? (
-                <WorkingLabel since={idleSince} />
-              ) : reasoningTokens >= 200 ? (
-                `Thinking… ${formatTokens(reasoningTokens)} tokens`
-              ) : (
-                'Thinking…'
-              )}
-            </Text>
-          </View>
-        ) : null}
-      </ScrollView>
-      <JumpPill state={pill} onPress={jumpToLatest} />
-    </View>
+          ) : (
+            items.map((item) => (
+              <ItemView
+                key={item.id}
+                item={item}
+                onRetry={item.id === retryId ? onRetry : undefined}
+              />
+            ))
+          )}
+          {running && stalled ? (
+            <StallRow onStop={onStop} onRetry={onRetry} />
+          ) : status ? (
+            // A steady label: the visible text ticks (seconds, token counts),
+            // and a live region reading every tick would never stop talking.
+            <View
+              style={styles.thinking}
+              accessible
+              accessibilityLabel={status === 'working' && idleSince !== null ? 'Working' : 'Thinking'}
+              {...liveStatus}
+            >
+              <ActivityIndicator size="small" color={colors.dust} />
+              <Text style={styles.thinkingText}>
+                {status === 'working' && idleSince !== null ? (
+                  <WorkingLabel since={idleSince} />
+                ) : reasoningTokens >= 200 ? (
+                  `Thinking… ${formatTokens(reasoningTokens)} tokens`
+                ) : (
+                  'Thinking…'
+                )}
+              </Text>
+            </View>
+          ) : null}
+        </ScrollView>
+        <JumpPill state={pill} onPress={jumpToLatest} />
+      </View>
+    </ScreenReaderContext.Provider>
   );
 }
 
@@ -403,10 +416,13 @@ function WorkingLabel({ since }: { since: number }) {
 }
 
 function StallRow({ onStop, onRetry }: { onStop: () => void; onRetry: () => void }) {
+  useAnnounce('Still waiting on the model');
   return (
     <View style={styles.stallCard}>
       <ActivityIndicator size="small" color={colors.dust} />
-      <Text style={styles.stallText}>Still waiting on the model…</Text>
+      <Text style={styles.stallText} {...liveStatus}>
+        Still waiting on the model…
+      </Text>
       <Pressable
         onPress={onStop}
         style={({ pressed }) => [styles.stallBtn, pressed && styles.pressed]}
@@ -528,6 +544,17 @@ const EntryView = React.memo(function EntryView({
   entry: Exclude<Entry, ToolEntry | ServerToolEntry | { kind: 'turnEnd' }>;
   onRetry?: () => void;
 }) {
+  // Only the latest failed turn has onRetry, so older errors in the history
+  // stay quiet; the latest one is spoken when it appears (or the chat opens).
+  useAnnounce(
+    !onRetry
+      ? null
+      : entry.kind === 'error'
+        ? `${errorTitle(entry.text)}. ${entry.text}`
+        : entry.kind === 'cutShort'
+          ? cutShortTitle(entry.reason === 'paused')
+          : null,
+  );
   if (entry.kind === 'user') {
     const bubble = entry.text ? (
       <View style={styles.userBubble}>
@@ -558,7 +585,7 @@ const EntryView = React.memo(function EntryView({
   if (entry.kind === 'cutShort') {
     const paused = entry.reason === 'paused';
     return (
-      <View style={styles.cutCard}>
+      <View style={styles.cutCard} {...(onRetry ? liveStatus : null)}>
         <Ionicons
           name={paused ? 'pause-circle-outline' : 'power-outline'}
           size={16}
@@ -566,9 +593,7 @@ const EntryView = React.memo(function EntryView({
           style={styles.errorIcon}
         />
         <View style={styles.errorBody}>
-          <Text style={styles.cutTitle}>
-            {paused ? 'Paused when you left Blank Slate' : 'Interrupted, Blank Slate closed while this was running'}
-          </Text>
+          <Text style={styles.cutTitle}>{cutShortTitle(paused)}</Text>
         </View>
         {onRetry ? (
           <Pressable
@@ -584,7 +609,7 @@ const EntryView = React.memo(function EntryView({
     );
   }
   return (
-    <View style={styles.errorCard}>
+    <View style={styles.errorCard} {...(onRetry ? liveAlert : null)}>
       <Ionicons name="alert-circle-outline" size={16} color={colors.danger} style={styles.errorIcon} />
       <View style={styles.errorBody}>
         <Text style={styles.errorTitle}>{errorTitle(entry.text)}</Text>
@@ -653,10 +678,17 @@ function SentAttachment({ attachment }: { attachment: EntryAttachment }) {
   );
 }
 
+// Whether a screen reader is on, provided once by ChatList.
+const ScreenReaderContext = React.createContext(false);
+
 // Long-press copies the message on native; on web the text is selectable.
-// No visible chrome until it's used.
+// No visible chrome until it's used. With a screen reader on, the long-press
+// wrapper would swallow the reply into one element (hiding its links and the
+// code Copy button), so the reply stays plain and gets a real Copy button.
 function AssistantText({ text }: { text: string }) {
   const [copied, setCopied] = React.useState(false);
+  const screenReader = React.useContext(ScreenReaderContext);
+  useAnnounce(copied ? 'Copied' : null);
   // Whitespace-only blocks are filtered out by buildRenderItems.
   const body = <Markdown text={text.trim()} />;
   if (Platform.OS === 'web') return <View style={styles.assistant}>{body}</View>;
@@ -668,6 +700,22 @@ function AssistantText({ text }: { text: string }) {
       })
       .catch(() => {});
   };
+  if (screenReader) {
+    return (
+      <View style={styles.assistant}>
+        {body}
+        <Pressable
+          onPress={copy}
+          style={({ pressed }) => [styles.copyReply, pressed && styles.pressed]}
+          accessibilityRole="button"
+          accessibilityLabel={copied ? 'Copied' : 'Copy reply'}
+        >
+          <Ionicons name={copied ? 'checkmark' : 'copy-outline'} size={14} color={colors.dust} />
+          <Text style={styles.copyReplyText}>{copied ? 'Copied' : 'Copy'}</Text>
+        </Pressable>
+      </View>
+    );
+  }
   return (
     <Pressable
       onLongPress={copy}
@@ -679,6 +727,10 @@ function AssistantText({ text }: { text: string }) {
       {copied ? <Text style={styles.copiedText}>Copied</Text> : null}
     </Pressable>
   );
+}
+
+function cutShortTitle(paused: boolean): string {
+  return paused ? 'Paused when you left Blank Slate' : 'Interrupted, Blank Slate closed while this was running';
 }
 
 function errorTitle(message: string): string {
@@ -804,6 +856,15 @@ const styles = StyleSheet.create({
   },
   retryText: { fontFamily: fonts.bodySemi, fontSize: 13, color: colors.slate },
   copiedText: { marginTop: 6, fontFamily: fonts.bodyMedium, fontSize: 12, color: colors.success },
+  copyReply: {
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    minHeight: 44,
+    paddingRight: 12,
+  },
+  copyReplyText: { fontFamily: fonts.bodyMedium, fontSize: 13, color: colors.dust },
   thinking: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 4 },
   thinkingText: { fontFamily: fonts.body, fontSize: 13, color: colors.dust },
   cutCard: {

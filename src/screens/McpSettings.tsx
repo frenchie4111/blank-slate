@@ -4,6 +4,7 @@ import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { desktopMcpHost, type McpConnectionInfo } from '../platform/desktop';
 import { colors, fonts, radii, type } from '../theme';
+import { liveStatus, useAnnounce } from './announce';
 
 // Settings → Coding agents: how to point Claude Code (or any MCP client) at
 // the server in desktop/src/mcp.js. Renders nothing outside the desktop shell.
@@ -11,6 +12,7 @@ export function McpSettings() {
   const host = desktopMcpHost();
   const [info, setInfo] = React.useState<McpConnectionInfo | null | undefined>(undefined);
   const [copied, setCopied] = React.useState(false);
+  useAnnounce(copied ? 'Copied' : null);
 
   React.useEffect(() => {
     if (!host) return;
@@ -61,7 +63,9 @@ export function McpSettings() {
                 accessibilityLabel="Copy Claude Code command"
               >
                 <Ionicons name={copied ? 'checkmark' : 'copy-outline'} size={16} color={colors.chalk} />
-                <Text style={styles.copyText}>{copied ? 'Copied' : 'Copy'}</Text>
+                <Text style={styles.copyText} {...liveStatus}>
+                  {copied ? 'Copied' : 'Copy'}
+                </Text>
               </Pressable>
             </View>
           ) : null}
