@@ -16,6 +16,7 @@ import { setApiKey } from '../storage/keyStore';
 import { colors, fonts, radii, type } from '../theme';
 import { useWideLayout } from '../theme/layout';
 import { LogoMark } from '../theme/LogoMark';
+import { liveAlert, useAnnounce } from './announce';
 
 type Props = { onDone: () => void };
 
@@ -25,6 +26,7 @@ export function OnboardingScreen({ onDone }: Props) {
   const [key, setKey] = React.useState('');
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  useAnnounce(error);
   const [focused, setFocused] = React.useState(false);
 
   const submit = async () => {
@@ -88,7 +90,9 @@ export function OnboardingScreen({ onDone }: Props) {
             accessibilityLabel="OpenRouter API key"
           />
           {error ? (
-            <Text style={styles.error}>{error}</Text>
+            <Text style={styles.error} {...liveAlert}>
+              {error}
+            </Text>
           ) : (
             <Text style={styles.help}>
               Stored only on this device, in the secure keychain, and sent only to

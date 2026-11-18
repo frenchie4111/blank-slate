@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { colors, fonts, noLigatures, radii, space } from '../theme';
 import * as vfs from '../vfs/vfs';
+import { errorMessage, InlineError } from './announce';
 
 type Props = {
   projectId: string | null;
@@ -20,8 +21,12 @@ export function FilesPanel({ projectId }: Props) {
   const [files, setFiles] = React.useState<string[]>([]);
   const [selected, setSelected] = React.useState<string | null>(null);
   const [content, setContent] = React.useState<string | null>(null);
-  const [loading, setLoading] = React.useState(false);
+  // A failed read, or 'missing' when the file no longer exists.
+  const [readError, setReadError] = React.useState<string | null>(null);
   const [pickerOpen, setPickerOpen] = React.useState(false);
+  // Bumped on every read and on every file or project change, so a slow
+  // earlier read can't land on top of a newer one.
+  const readIdRef = React.useRef(0);
 
   const refreshList = React.useCallback(async () => {
     const list = await vfs.listFiles();
@@ -34,14 +39,25 @@ export function FilesPanel({ projectId }: Props) {
   }, []);
 
   const loadContent = React.useCallback(async (path: string) => {
-    setLoading(true);
+    const id = ++readIdRef.current;
     try {
       const text = await vfs.readFile(path);
-      setContent(text ?? '');
-    } finally {
-      setLoading(false);
+      if (id !== readIdRef.current) return;
+      setContent(text);
+      setReadError(text === null ? 'missing' : null);
+    } catch (e) {
+      if (id !== readIdRef.current) return;
+      setContent(null);
+      setReadError(errorMessage(e));
     }
   }, []);
+
+  // Drops what's on screen and any read in flight.
+  const clearContent = () => {
+    readIdRef.current++;
+    setContent(null);
+    setReadError(null);
+  };
 
   React.useEffect(() => {
     refreshList();
@@ -56,14 +72,15 @@ export function FilesPanel({ projectId }: Props) {
 
   React.useEffect(() => {
     setSelected(null);
-    setContent(null);
+    clearContent();
     setPickerOpen(false);
     refreshList();
   }, [projectId, refreshList]);
 
+  // A newly picked file starts blank (spinner), never showing the last one.
   React.useEffect(() => {
+    clearContent();
     if (selected) loadContent(selected);
-    else setContent(null);
   }, [selected, loadContent]);
 
   const pick = (path: string) => {
@@ -106,14 +123,25 @@ export function FilesPanel({ projectId }: Props) {
             style={styles.contentScroll}
             contentContainerStyle={styles.contentInner}
           >
-            {loading && content === null ? (
+            {readError ? (
               <View style={styles.loadingRow}>
-                <ActivityIndicator size="small" color={colors.dust} />
+                <InlineError
+                  message={
+                    readError === 'missing'
+                      ? `${selected} no longer exists.`
+                      : `Couldn't open ${selected}. ${readError}`
+                  }
+                  style={styles.readError}
+                />
               </View>
-            ) : content?.startsWith('data:image/') ? (
+            ) : content === null ? (
+              <View style={styles.loadingRow}>
+                <ActivityIndicator size="small" color={colors.dust} accessibilityLabel="Loading file" />
+              </View>
+            ) : content.startsWith('data:image/') ? (
               <Image source={{ uri: content }} style={styles.imagePreview} resizeMode="contain" />
             ) : (
-              <CodeView code={content ?? ''} />
+              <CodeView code={content} />
             )}
           </ScrollView>
         ) : (
@@ -255,6 +283,7 @@ const styles = StyleSheet.create({
     color: colors.chalkSoft,
   },
 
+  readError: { marginTop: 0, textAlign: 'center' },
   emptyWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12, padding: 32 },
   empty: {
     fontFamily: fonts.body,

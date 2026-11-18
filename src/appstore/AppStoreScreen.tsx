@@ -16,6 +16,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { Project } from '../project/store';
 import { colors, fonts, radii, type } from '../theme';
 import { useWideLayout } from '../theme/layout';
+import { errorMessage, InlineError } from '../screens/announce';
 import { search, type Listing } from './catalog';
 import { Screenshot, StoreIcon } from './Screenshot';
 import * as shotImages from './shotImages';
@@ -76,6 +77,8 @@ export function AppStoreScreen({
   );
   const [selected, setSelected] = React.useState<Listing | null>(null);
   const [installing, setInstalling] = React.useState<string | null>(null);
+  // The last failed Get, shown under that listing's button until the next try.
+  const [installError, setInstallError] = React.useState<{ id: string; message: string } | null>(null);
   const abortRef = React.useRef<AbortController | null>(null);
 
   const runSearch = React.useCallback(
@@ -121,17 +124,21 @@ export function AppStoreScreen({
     const existing = installedId(l);
     if (existing) return onOpenProject(existing);
     setInstalling(l.id);
+    setInstallError(null);
     try {
       await onInstall(l);
+    } catch (e) {
+      setInstallError({ id: l.id, message: `Couldn't get ${l.name}. ${errorMessage(e)}` });
     } finally {
       setInstalling(null);
     }
   };
 
-  const getProps = (l: Listing) => ({
+  const getProps = (l: Listing): GetProps => ({
     installed: !!installedId(l),
     busy: installing === l.id,
     disabled: !!installing && installing !== l.id,
+    error: installError?.id === l.id ? installError.message : null,
     onPress: () => get(l),
   });
 
@@ -239,7 +246,13 @@ export function StoreAppIcon({ size = 72 }: { size?: number }) {
   );
 }
 
-type GetProps = { installed: boolean; busy: boolean; disabled: boolean; onPress: () => void };
+type GetProps = {
+  installed: boolean;
+  busy: boolean;
+  disabled: boolean;
+  error: string | null;
+  onPress: () => void;
+};
 
 function GetButton({ installed, busy, disabled, onPress, big }: GetProps & { big?: boolean }) {
   return (
@@ -290,6 +303,7 @@ function ResultRow({ listing: l, onOpen, get }: { listing: Listing; onOpen: () =
         </Pressable>
         <GetButton {...get} />
       </View>
+      <InlineError message={get.error} style={styles.getError} />
       {l.screens.length ? (
         <Pressable
           onPress={onOpen}
@@ -369,6 +383,7 @@ function Detail({
           </View>
         </View>
       </View>
+      <InlineError message={get.error} style={[styles.note, styles.getError, wide && styles.column]} />
       {get.busy ? (
         <Text style={[styles.note, wide && styles.column]}>
           Finishing the screenshots. The agent gets them as the design to build from.
@@ -706,6 +721,7 @@ const styles = StyleSheet.create({
   detailDev: { fontFamily: fonts.body, fontSize: 13, color: colors.dust },
   detailGetRow: { flexDirection: 'row', marginTop: 8 },
   note: { fontFamily: fonts.body, fontSize: 12, color: colors.dust, paddingHorizontal: 20, paddingTop: 10 },
+  getError: { color: colors.danger, marginTop: 8 },
 
   stats: {
     flexDirection: 'row',

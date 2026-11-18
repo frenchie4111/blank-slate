@@ -69,6 +69,7 @@ import { Dock, DOCK_BAR_HEIGHT, dockChin } from './Dock';
 import { FilesPanel } from './FileViewer';
 import { HistoryPanel } from './HistoryPanel';
 import { SettingsScreen } from './SettingsScreen';
+import { errorMessage } from './announce';
 import { useKeyboardShown } from './useKeyboardShown';
 import { AppActionsProvider, YourAppsScreen } from './YourAppsScreen';
 
@@ -717,17 +718,28 @@ export function MainScreen({ apiKey, onResetKey }: Props) {
   // opened on its chat with the listing sent as the first request.
   // Its screenshots go into the project as the design the agent recreates;
   // any not generated yet are made first (the Get button spins meanwhile).
+  // Failures before the app opens throw, so the store shows them on the listing.
+  // Once the app is open, a failure lands in its chat instead.
   const installFromStore = async (listing: Listing) => {
     const shots = await shotImages.collect(apiKey, listing);
     const project = await projectStore.create(listing.name, tileFor(listing), listing.vibe);
     await enterApp(project.id, { chat: true });
-    const paths: string[] = [];
-    for (const [i, dataUrl] of shots.entries()) {
-      const path = `design/store-screenshot-${i + 1}.${dataUrl?.startsWith('data:image/jpeg') ? 'jpg' : 'png'}`;
-      if (dataUrl && (await vfs.writeFile(path, dataUrl).then(() => true, () => false))) paths[i] = path;
+    const failed = (e: unknown) => {
+      const text = `Couldn't start building ${listing.name}. ${errorMessage(e)} Describe the app below to start it by hand.`;
+      setEntries((prev) => [...prev, { kind: 'error', id: `err-${prev.length}`, text }]);
+    };
+    try {
+      const paths: string[] = [];
+      for (const [i, dataUrl] of shots.entries()) {
+        const path = `design/store-screenshot-${i + 1}.${dataUrl?.startsWith('data:image/jpeg') ? 'jpg' : 'png'}`;
+        if (dataUrl && (await vfs.writeFile(path, dataUrl).then(() => true, () => false))) paths[i] = path;
+      }
+      await chatLoadRef.current.catch(() => {});
+      // Not awaited: the turn is the whole build, and the Get button only covers setup.
+      runTurn(buildPrompt(listing, paths)).catch(failed);
+    } catch (e) {
+      failed(e);
     }
-    await chatLoadRef.current.catch(() => {});
-    runTurn(buildPrompt(listing, paths));
   };
 
   // Opening the store switches no project, so a running build carries on.

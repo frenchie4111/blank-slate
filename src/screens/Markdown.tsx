@@ -2,8 +2,18 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import { Lexer, type Token, type Tokens } from 'marked';
 import React from 'react';
-import { Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import {
+  Linking,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+  type TextProps,
+} from 'react-native';
 import { colors, fonts, noLigatures, radii } from '../theme';
+import { liveStatus, useAnnounce } from './announce';
 
 // Chat-sized markdown renderer on top of marked's lexer (pure JS, no native
 // code). Each top-level block is memoized on its raw source, so while a reply
@@ -135,7 +145,7 @@ function renderInline(tokens: Token[] | undefined): React.ReactNode[] {
       case 'link': {
         const l = t as Tokens.Link;
         return (
-          <Text key={i} style={styles.link} onPress={() => openLink(l.href)}>
+          <Text key={i} style={styles.link} {...linkProps(l.href)}>
             {renderInline(l.tokens)}
           </Text>
         );
@@ -143,7 +153,7 @@ function renderInline(tokens: Token[] | undefined): React.ReactNode[] {
       case 'image': {
         const img = t as Tokens.Image;
         return (
-          <Text key={i} style={styles.link} onPress={() => openLink(img.href)}>
+          <Text key={i} style={styles.link} {...linkProps(img.href)}>
             {img.text || img.href}
           </Text>
         );
@@ -166,9 +176,24 @@ function renderInline(tokens: Token[] | undefined): React.ReactNode[] {
   });
 }
 
+const SAFE_LINK = /^(https?:|mailto:|tel:)/i;
+
 function openLink(href: string) {
-  if (!/^(https?:|mailto:|tel:)/i.test(href)) return;
+  if (!SAFE_LINK.test(href)) return;
   Linking.openURL(href).catch(() => {});
+}
+
+// Screen readers announce these as links. On web they render as a real <a>
+// (react-native-web's href/hrefAttrs), so Tab, Enter and "open in new tab" work.
+function linkProps(href: string): TextProps {
+  if (Platform.OS === 'web' && SAFE_LINK.test(href)) {
+    return {
+      accessibilityRole: 'link',
+      href,
+      hrefAttrs: { target: '_blank', rel: 'noopener noreferrer' },
+    } as TextProps;
+  }
+  return { accessibilityRole: 'link', onPress: () => openLink(href) };
 }
 
 function List({ list }: { list: Tokens.List }) {
@@ -199,6 +224,7 @@ function List({ list }: { list: Tokens.List }) {
 
 function CodeBlock({ code, lang }: { code: string; lang?: string }) {
   const [copied, setCopied] = React.useState(false);
+  useAnnounce(copied ? 'Copied' : null);
   const copy = () => {
     Clipboard.setStringAsync(code)
       .then(() => {
@@ -211,13 +237,21 @@ function CodeBlock({ code, lang }: { code: string; lang?: string }) {
     <View style={styles.codeBlock}>
       <View style={styles.codeHeader}>
         <Text style={styles.codeLang}>{lang || 'code'}</Text>
-        <Pressable onPress={copy} hitSlop={8} style={styles.copyBtn}>
+        <Pressable
+          onPress={copy}
+          hitSlop={8}
+          style={styles.copyBtn}
+          accessibilityRole="button"
+          accessibilityLabel={copied ? 'Copied' : `Copy ${lang || 'code'}`}
+        >
           <Ionicons
             name={copied ? 'checkmark' : 'copy-outline'}
             size={12}
             color={copied ? colors.success : colors.dust}
           />
-          <Text style={styles.copyText}>{copied ? 'Copied' : 'Copy'}</Text>
+          <Text style={styles.copyText} {...liveStatus}>
+            {copied ? 'Copied' : 'Copy'}
+          </Text>
         </Pressable>
       </View>
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.codeScroll}>
